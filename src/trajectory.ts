@@ -35,8 +35,12 @@ export const MOON_RADIUS = 0.273;
 /** Closest flyby distance from Moon center (scene units) — real: 8,282 km */
 const FLYBY_RADIUS = 0.86;
 
-/** High Earth orbit apogee (scene units) — real: 71,000 km ≈ 11.1 Earth-radii */
-const HEO_APOGEE = 11.1 * (40 / 60.3); // ≈ 7.4 units
+/**
+ * High Earth orbit apogee (scene units).
+ * Real: 71,000 km ≈ 11.1 Earth-radii ≈ 7.4 units.
+ * Visually scaled to ~4 units for clarity (matches NASA animation proportions).
+ */
+const HEO_APOGEE = 4;
 
 /** Sun direction (unit vector, only for lighting) */
 export const SUN_DIR = new THREE.Vector3(1, 0.3, 0.5).normalize();
@@ -78,185 +82,94 @@ export const MISSION_TIMELINE = {
  *
  * @param moonAngle  The Moon's orbital angle (radians) at mission start.
  */
-export function buildTrajectory(moonAngle: number): THREE.CatmullRomCurve3 {
-  const moonPos = new THREE.Vector3(
-    Math.cos(moonAngle) * MOON_DISTANCE,
-    0,
-    Math.sin(moonAngle) * MOON_DISTANCE,
-  );
-
-  // Direction vectors relative to the Earth-Moon line
-  const toMoon = moonPos.clone().normalize();               // Earth → Moon direction
-  const perpUp = new THREE.Vector3(0, 1, 0);                // "North"
-  const perpSide = new THREE.Vector3().crossVectors(toMoon, perpUp).normalize(); // sideways
-
+export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   const points: THREE.Vector3[] = [];
 
-  // Helper: point on an elliptical orbit around Earth in the orbital plane
-  // a = semi-major, e = eccentricity, angle = true anomaly
-  function orbitPt(a: number, e: number, angle: number, yOff: number): THREE.Vector3 {
-    const r = a * (1 - e * e) / (1 + e * Math.cos(angle));
-    // Orbit in the perpSide-toMoon plane, tilted slightly with y
-    return perpSide.clone().multiplyScalar(Math.cos(angle) * r)
-      .add(toMoon.clone().multiplyScalar(Math.sin(angle) * r))
-      .setY(yOff);
-  }
+  const INCL = (28.5 * Math.PI) / 180;
+  const e1 = new THREE.Vector3(1, 0, 0);
+  const e2 = new THREE.Vector3(0, Math.sin(INCL), Math.cos(INCL));
 
-  // ══════════════════════════════════════════════════════════════════
-  //  Phase 1: Launch & LEO (1 orbit)
-  //  Real: initial orbit is suborbital, then ICPS raises perigee
-  // ══════════════════════════════════════════════════════════════════
-  const leoR = EARTH_RADIUS + 0.08;  // ~160 km altitude
-  // Launch point
-  points.push(new THREE.Vector3(0, EARTH_RADIUS * 0.95, 0));
-  // LEO orbit — 6 points around Earth (nearly circular)
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + 0.3; // start slightly offset
+  const leoR = EARTH_RADIUS + 0.08;
+  const heoSemiMajor = (EARTH_RADIUS + 0.3 + HEO_APOGEE) / 2;
+  const heoEcc = (HEO_APOGEE - EARTH_RADIUS - 0.3) / (HEO_APOGEE + EARTH_RADIUS + 0.3);
+  const LOOP_R = 4;
+  const OFFSET = 2;
+
+  // ── Spiral: LEO → HEO, 1.75 revolutions, 60 points ──
+  const spiralN = 60;
+  const totalAngle = 1.75 * 2 * Math.PI;
+  for (let i = 0; i < spiralN; i++) {
+    const frac = i / (spiralN - 1);
+    const angle = frac * totalAngle;
+    const blend = 1 / (1 + Math.exp(-(frac - 0.30) / 0.12));
+    const heoLocal = (frac - 0.30) * totalAngle;
+    const rHeo = heoSemiMajor * (1 - heoEcc * heoEcc) / (1 + heoEcc * Math.cos(heoLocal));
+    const r = leoR + (rHeo - leoR) * blend;
     points.push(new THREE.Vector3(
-      Math.cos(a) * leoR,
-      Math.sin(a) * leoR * 0.3, // inclined ~28.5°
-      Math.sin(a) * leoR * 0.95,
+      Math.cos(angle) * r,
+      Math.sin(angle) * r * Math.sin(INCL),
+      Math.sin(angle) * r * Math.cos(INCL),
     ));
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  //  Phase 2: High Earth Orbit (1 large elliptical orbit)
-  //  Real: ICPS burn raises apogee to 44,000 mi, period 23.5 hr
-  // ══════════════════════════════════════════════════════════════════
-  const heoA = HEO_APOGEE; // semi-major ≈ 7.4 units
-  // Expanding spiral transition
-  points.push(new THREE.Vector3(
-    leoR * 1.2, 0.5, leoR * 0.8,
-  ));
-  // HEO ellipse — 8 points (highly elliptical)
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    const r = heoA * 0.5 * (1 + 0.6 * Math.cos(a)); // eccentric
-    const pt = perpSide.clone().multiplyScalar(Math.cos(a) * r)
-      .add(toMoon.clone().multiplyScalar(Math.sin(a) * r * 0.6));
-    pt.y = Math.sin(a) * r * 0.15;
-    points.push(pt);
+  // ── Outbound: spiral end → flyby entry, sine-bulge in Z ──
+  // Z = linear_interp + OFFSET*sin(πt)
+  // Near Earth (t≈0): Z ≈ spiralEnd.z (natural, no spread)
+  // Middle (t=0.5): Z = midpoint + OFFSET (pushed to +Z side)
+  // Near Moon (t≈1): Z ≈ flybyEntry.z (matches flyby, no kink)
+  const spiralEnd = points[points.length - 1].clone();
+  const flybyEntry = new THREE.Vector3(
+    MOON_DISTANCE + LOOP_R * Math.cos(Math.PI / 2),
+    -0.05,
+    LOOP_R * Math.sin(Math.PI / 2),   // +Z side (right)
+  );
+  const outN = 30;
+  for (let i = 1; i < outN; i++) {
+    const t = i / outN;
+    const x = spiralEnd.x + (flybyEntry.x - spiralEnd.x) * t;
+    const y = spiralEnd.y + (flybyEntry.y - spiralEnd.y) * t;
+    const zLinear = spiralEnd.z + (flybyEntry.z - spiralEnd.z) * t;
+    const z = zLinear - OFFSET * Math.sin(Math.PI * t);
+    points.push(new THREE.Vector3(x, y, z));
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  //  Phase 3: TLI & Outbound — nearly straight to the Moon
-  //  After TLI burn at perigee, the spacecraft enters an extremely
-  //  flat ellipse (almost a straight line) aimed at the Moon.
-  //  Slight offset to +perpSide (one side of the "bowtie")
-  // ══════════════════════════════════════════════════════════════════
-  // TLI departure — slight curve away from Earth
-  const tliStart = toMoon.clone().multiplyScalar(3)
-    .add(perpSide.clone().multiplyScalar(1.5));
-  tliStart.y = 0.2;
-  points.push(tliStart);
+  // ── Flyby: semicircle around Moon far side, 20 points ──
+  // Flyby goes from +Z (+π/2) around far side to -Z (-π/2)
+  const flybyN = 20;
+  for (let i = 0; i < flybyN; i++) {
+    const angle = (Math.PI / 2) - (i / (flybyN - 1)) * Math.PI;
+    points.push(new THREE.Vector3(
+      MOON_DISTANCE + LOOP_R * Math.cos(angle),
+      -0.05,
+      LOOP_R * Math.sin(angle),
+    ));
+  }
 
-  // Outbound is nearly straight but with a gentle arc on +perpSide
-  // The arc is subtle (max ~2-3 units off the center line) because
-  // the real trajectory is a very flat ellipse
-  const outbound1 = toMoon.clone().multiplyScalar(MOON_DISTANCE * 0.15)
-    .add(perpSide.clone().multiplyScalar(2.5));
-  outbound1.y = 0.15;
-  points.push(outbound1);
+  // ── Return: flyby exit → Earth, sine-bulge in -Z ──
+  // Z = linear_interp - OFFSET*sin(πt)
+  // Near Moon (t≈0): Z ≈ flybyExit.z (natural)
+  // Middle (t=0.5): Z = midpoint - OFFSET (pushed to -Z side → crosses outbound!)
+  // Near Earth (t≈1): Z ≈ 0 (natural, converges with outbound)
+  const flybyExit = new THREE.Vector3(
+    MOON_DISTANCE + LOOP_R * Math.cos(-Math.PI / 2),
+    -0.05,
+    LOOP_R * Math.sin(-Math.PI / 2),   // -Z side (left)
+  );
+  const earthEnd = new THREE.Vector3(0, -0.3, 0);
+  const retN = 30;
+  for (let i = 1; i <= retN; i++) {
+    const t = i / retN;
+    const x = flybyExit.x + (earthEnd.x - flybyExit.x) * t;
+    const y = flybyExit.y + (earthEnd.y - flybyExit.y) * t;
+    const zLinear = flybyExit.z + (earthEnd.z - flybyExit.z) * t;
+    const z = zLinear + OFFSET * Math.sin(Math.PI * t);
+    points.push(new THREE.Vector3(x, y, z));
+  }
 
-  const outbound2 = toMoon.clone().multiplyScalar(MOON_DISTANCE * 0.4)
-    .add(perpSide.clone().multiplyScalar(3));
-  outbound2.y = 0.1;
-  points.push(outbound2);
-
-  const outbound3 = toMoon.clone().multiplyScalar(MOON_DISTANCE * 0.7)
-    .add(perpSide.clone().multiplyScalar(2));
-  outbound3.y = 0.05;
-  points.push(outbound3);
-
-  // ══════════════════════════════════════════════════════════════════
-  //  Phase 4: Lunar flyby — hyperbolic loop around the FAR SIDE
-  //  Spacecraft on a hyperbolic trajectory relative to Moon.
-  //  Approaches from +perpSide, swings behind the far side,
-  //  exits toward -perpSide. This direction reversal is the key
-  //  to the "bowtie" shape.
-  // ══════════════════════════════════════════════════════════════════
-
-  // Approach — arriving from +perpSide, near the Moon's near side
-  const approach = moonPos.clone()
-    .add(perpSide.clone().multiplyScalar(1.5))
-    .add(toMoon.clone().multiplyScalar(-FLYBY_RADIUS * 0.5));
-  approach.y = 0.0;
-  points.push(approach);
-
-  // Entering behind the Moon — curving from +perpSide to far side
-  const farEntry = moonPos.clone()
-    .add(toMoon.clone().multiplyScalar(FLYBY_RADIUS * 0.85))
-    .add(perpSide.clone().multiplyScalar(FLYBY_RADIUS * 0.7));
-  farEntry.y = -0.05;
-  points.push(farEntry);
-
-  // Closest approach — directly behind Moon (far side from Earth)
-  // Real: 4,067 mi (6,545 km) from surface. Communication blackout ~40 min.
-  const closest = moonPos.clone()
-    .add(toMoon.clone().multiplyScalar(FLYBY_RADIUS));
-  closest.y = -0.1;
-  points.push(closest);
-
-  // Exiting the far side — curving toward -perpSide
-  const farExit = moonPos.clone()
-    .add(toMoon.clone().multiplyScalar(FLYBY_RADIUS * 0.85))
-    .add(perpSide.clone().multiplyScalar(-FLYBY_RADIUS * 0.7));
-  farExit.y = -0.15;
-  points.push(farExit);
-
-  // Departing Moon — now heading on -perpSide (opposite of arrival)
-  // Gravity slingshot: spacecraft speed relative to Earth drops
-  // to nearly zero, then Earth's gravity pulls it back
-  const depart = moonPos.clone()
-    .add(perpSide.clone().multiplyScalar(-1.5))
-    .add(toMoon.clone().multiplyScalar(-FLYBY_RADIUS * 0.5));
-  depart.y = -0.2;
-  points.push(depart);
-
-  // ══════════════════════════════════════════════════════════════════
-  //  Phase 5: Return — nearly straight back, opposite side
-  //  After the gravity slingshot, the spacecraft "almost stops"
-  //  relative to Earth, then free-falls back on a nearly straight
-  //  path on the -perpSide (opposite to outbound).
-  //  The two paths cross near Earth → creating the "bowtie" shape.
-  // ══════════════════════════════════════════════════════════════════
-  const return1 = toMoon.clone().multiplyScalar(MOON_DISTANCE * 0.7)
-    .add(perpSide.clone().multiplyScalar(-2));
-  return1.y = -0.15;
-  points.push(return1);
-
-  const return2 = toMoon.clone().multiplyScalar(MOON_DISTANCE * 0.4)
-    .add(perpSide.clone().multiplyScalar(-3));
-  return2.y = -0.2;
-  points.push(return2);
-
-  // Return path approaching Earth — converges back toward Earth
-  // The crossover happens very close to Earth (the "knot" of the bowtie)
-  const return3 = toMoon.clone().multiplyScalar(MOON_DISTANCE * 0.15)
-    .add(perpSide.clone().multiplyScalar(-2.5));
-  return3.y = -0.15;
-  points.push(return3);
-
-  const return4 = toMoon.clone().multiplyScalar(MOON_DISTANCE * 0.04)
-    .add(perpSide.clone().multiplyScalar(-1));
-  return4.y = -0.1;
-  points.push(return4);
-
-  // ══════════════════════════════════════════════════════════════════
-  //  Phase 6: Re-entry & Splashdown
-  // ══════════════════════════════════════════════════════════════════
-  // Approaching Earth from below the orbital plane
-  const reentry = perpSide.clone().multiplyScalar(-1.5);
-  reentry.y = -0.3;
-  points.push(reentry);
-
-  // Re-entry
-  points.push(new THREE.Vector3(-0.5, -(EARTH_RADIUS + 0.1), -0.8));
-
-  // Splashdown — Pacific Ocean
+  // ── Splashdown ──
   points.push(new THREE.Vector3(-0.2, -EARTH_RADIUS, -0.3));
 
-  return new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.3);
+  return new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
 }
 
 /* ------------------------------------------------------------------ */
@@ -264,57 +177,23 @@ export function buildTrajectory(moonAngle: number): THREE.CatmullRomCurve3 {
 /* ------------------------------------------------------------------ */
 
 /**
- * The desired mission-progress fraction for each control point.
- * Must match the number of points in buildTrajectory() — 32 points.
- *
- * Day 0:   Launch, LEO (1 orbit), transition to HEO
- * Day 0-1: High Earth Orbit (1 elliptical orbit, 23.5 hr period)
- * Day 1-2: TLI burn + start of outbound coast
- * Day 2-5: Translunar coast (upper leg of figure-8)
- * Day 6:   Lunar flyby around far side
- * Day 6-9: Free-return coast (lower leg of figure-8)
- * Day 10:  Re-entry + splashdown
+ * Mission-progress for each control point (140 points).
  */
-const WAYPOINT_PROGRESS = [
-  // Phase 1: Launch + LEO orbit (7 pts)
-  0.000,  // 0: Launch
-  0.004,  // 1: LEO pt 1
-  0.008,  // 2: LEO pt 2
-  0.012,  // 3: LEO pt 3
-  0.016,  // 4: LEO pt 4
-  0.020,  // 5: LEO pt 5
-  0.024,  // 6: LEO pt 6
-  // Phase 2: Transition + HEO orbit (9 pts)
-  0.030,  // 7: expanding transition
-  0.035,  // 8: HEO pt 1
-  0.045,  // 9: HEO pt 2
-  0.055,  // 10: HEO pt 3
-  0.065,  // 11: HEO pt 4
-  0.075,  // 12: HEO pt 5
-  0.085,  // 13: HEO pt 6
-  0.092,  // 14: HEO pt 7
-  0.098,  // 15: HEO pt 8
-  // Phase 3: TLI + outbound coast (4 pts)
-  0.12,   // 16: TLI departure
-  0.22,   // 17: Outbound coast 1
-  0.32,   // 18: Outbound coast 2
-  0.42,   // 19: Outbound coast 3
-  // Phase 4: Lunar flyby (5 pts)
-  0.52,   // 20: Approach
-  0.57,   // 21: Far side entry
-  0.60,   // 22: Closest approach  ← FLYBY!
-  0.63,   // 23: Far side exit
-  0.67,   // 24: Departing Moon
-  // Phase 5: Return coast (4 pts)
-  0.72,   // 25: Return 1
-  0.78,   // 26: Return 2 (crossover)
-  0.84,   // 27: Return 3
-  0.90,   // 28: Return 4 near Earth
-  // Phase 6: Re-entry + splashdown (3 pts)
-  0.95,   // 29: Re-entry approach
-  0.98,   // 30: Re-entry
-  1.00,   // 31: Splashdown
-];
+const WAYPOINT_PROGRESS = (() => {
+  const wp: number[] = [];
+  const spiral = 60, out = 29, flyby = 20, ret = 30, end = 1;
+  // Spiral: 0 → 0.10
+  for (let i = 0; i < spiral; i++) wp.push((i / spiral) * 0.10);
+  // Outbound: 0.10 → 0.50
+  for (let i = 0; i < out; i++) wp.push(0.10 + (i / out) * 0.40);
+  // Flyby: 0.50 → 0.70
+  for (let i = 0; i < flyby; i++) wp.push(0.50 + (i / flyby) * 0.20);
+  // Return: 0.70 → 0.97
+  for (let i = 0; i < ret; i++) wp.push(0.70 + (i / ret) * 0.27);
+  // Splashdown
+  wp.push(1.00);
+  return wp;
+})();
 
 /**
  * Build a mapping function: mission progress (0–1) → curve arc-length t (0–1).

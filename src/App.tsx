@@ -411,16 +411,12 @@ function Scene({
   setProgress: (p: number | ((prev: number) => number)) => void;
   focusTarget: FocusTarget;
 }) {
-  const moonStartAngle = useRef(0);
-  const moonAngle = moonStartAngle.current + (progress * MISSION_DURATION) / MOON_ORBIT_PERIOD * Math.PI * 2;
-
-  // Build trajectory targeting the Moon's position at FLYBY time, not launch time.
-  // Over the 6-day outbound leg, the Moon moves ~80° in its orbit.
-  const moonAngleAtFlyby = useMemo(() => {
-    return moonStartAngle.current
-      + (MISSION_TIMELINE.flyby * MISSION_DURATION) / MOON_ORBIT_PERIOD * Math.PI * 2;
-  }, []);
-  const curve = useMemo(() => buildTrajectory(moonAngleAtFlyby), [moonAngleAtFlyby]);
+  // NASA animations use a rotating reference frame (synodic frame) where
+  // the Moon stays fixed relative to Earth. In the inertial frame the Moon
+  // moves ~132° over 10 days and the figure-8 shape is not visible.
+  // We fix the Moon at angle 0 and build the trajectory for that position.
+  const moonAngle = 0;
+  const curve = useMemo(() => buildTrajectory(0), []);
   const mapProgress = useMemo(() => buildProgressMapping(curve), [curve]);
 
   // Compute ship position for camera tracking
@@ -446,7 +442,7 @@ function Scene({
       <DistantBodies />
       <TrajectoryLine curve={curve} mapProgress={mapProgress} />
       <Spacecraft curve={curve} progress={progress} mapProgress={mapProgress} />
-      <CameraController focusTarget={focusTarget} moonAngle={moonAngle} shipPos={shipPos} />
+      <CameraController focusTarget={focusTarget} moonAngle={0} shipPos={shipPos} />
     </>
   );
 }
