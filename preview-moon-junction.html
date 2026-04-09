@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Moon Flyby Junction Preview</title>
+<style>
+body { background: #111; color: #ccc; font-family: monospace; margin: 20px; }
+h1 { color: #ff8844; }
+canvas { border: 1px solid #333; margin: 5px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; }
+.cell { text-align: center; }
+.cell p { font-size: 11px; color: #888; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Moon Flyby Junction Variants</h1>
+<p>Top-down view zoomed to Moon area. Green=outbound, Blue=flyby arc, Orange=return. Red dot=Moon center.</p>
+<div class="row" id="variants"></div>
+
+<script>
+const MD = 40, LR = 4, OFF = 2;
+
+function buildFlyby(nPts) {
+  const pts = [];
+  for (let i = 0; i < nPts; i++) {
+    const a = Math.PI/2 - (i/(nPts-1)) * Math.PI;
+    pts.push({ x: MD + LR*Math.cos(a), z: LR*Math.sin(a) });
+  }
+  return pts;
+}
+
+function buildOutboundEnd(tangentPts, approachStyle) {
+  // Last portion of outbound approaching flyby entry (MD, +LR)
+  // We generate points from X=25 to flyby entry
+  const pts = [];
+  const startX = 25, startZ = 0.5; // approx outbound at X=25
+  const endX = MD, endZ = LR;
+  const N = 60;
+  
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    let x, z;
+    
+    if (approachStyle === 'linear') {
+      x = startX + (endX - startX) * t;
+      z = startZ + (endZ - startZ) * t;
+    } else if (approachStyle === 'hermite') {
+      // Hermite: start tangent = +X, end tangent = +X (circle tangent)
+      const cs = (endX - startX) * (tangentPts / 10);
+      const h00 = 2*t*t*t - 3*t*t + 1;
+      const h10 = t*t*t - 2*t*t + t;
+      const h01 = -2*t*t*t + 3*t*t;
+      const h11 = t*t*t - t*t;
+      x = h00*startX + h10*1*cs + h01*endX + h11*1*cs;
+      z = h00*startZ + h10*0.1*cs + h01*endZ + h11*0*cs;
+    }
+    z -= OFF * Math.sin(Math.PI * t) * (1-t); // fade bulge near Moon
+    pts.push({ x, z });
+  }
+  return pts;
+}
+
+function buildReturnStart(tangentPts, departStyle) {
+  const pts = [];
+  const startX = MD, startZ = -LR; // flyby exit
+  const endX = 25, endZ = -0.5;
+  const N = 60;
+  
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    let x, z;
+    
+    if (departStyle === 'linear') {
+      x = startX + (endX - startX) * t;
+      z = startZ + (endZ - startZ) * t;
+    } else if (departStyle === 'hermite') {
+      const cs = (startX - endX) * (tangentPts / 10);
+      const h00 = 2*t*t*t - 3*t*t + 1;
+      const h10 = t*t*t - 2*t*t + t;
+      const h01 = -2*t*t*t + 3*t*t;
+      const h11 = t*t*t - t*t;
+      x = h00*startX + h10*(-1)*cs + h01*endX + h11*(-1)*cs;
+      z = h00*startZ + h10*0*cs + h01*endZ + h11*(-0.1)*cs;
+    }
+    z += OFF * Math.sin(Math.PI * t) * (1-t);
+    pts.push({ x, z });
+  }
+  return pts;
+}
+
+function drawVariant(container, label, flybyPts, tangentScale, style) {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  const canvas = document.createElement('canvas');
+  canvas.width = 350; canvas.height = 350;
+  const ctx = canvas.getContext('2d');
+  
+  const flyby = buildFlyby(flybyPts);
+  const outEnd = buildOutboundEnd(tangentScale, style);
+  const retStart = buildReturnStart(tangentScale, style);
+  
+  // Viewport: Moon area
+  const xMin = 28, xMax = 48, zMin = -8, zMax = 8;
+  function toC(pt) {
+    return {
+      cx: (pt.x - xMin) / (xMax - xMin) * canvas.width,
+      cy: canvas.height - (pt.z - zMin) / (zMax - zMin) * canvas.height,
+    };
+  }
+  
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  // Grid
+  ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 0.5;
+  for (let x = xMin; x <= xMax; x += 2) {
+    const {cx} = toC({x, z:0});
+    ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,canvas.height); ctx.stroke();
+  }
+  for (let z = zMin; z <= zMax; z += 2) {
+    const {cy} = toC({x:0, z});
+    ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(canvas.width,cy); ctx.stroke();
+  }
+  
+  // Moon
+  const m = toC({x: MD, z: 0});
+  ctx.beginPath();
+  ctx.arc(m.cx, m.cy, (0.273 / (xMax-xMin)) * canvas.width, 0, Math.PI*2);
+  ctx.fillStyle = '#999'; ctx.fill();
+  // Moon label
+  ctx.fillStyle = '#666'; ctx.font = '10px monospace';
+  ctx.fillText('Moon', m.cx - 14, m.cy - 8);
+  
+  // Draw outbound approach (green)
+  ctx.strokeStyle = '#44cc66'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  outEnd.forEach((p, i) => {
+    const {cx, cy} = toC(p);
+    i === 0 ? ctx.moveTo(cx, cy) : ctx.lineTo(cx, cy);
+  });
+  ctx.stroke();
+  
+  // Draw flyby arc (blue)
+  ctx.strokeStyle = '#4488ff'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  flyby.forEach((p, i) => {
+    const {cx, cy} = toC(p);
+    i === 0 ? ctx.moveTo(cx, cy) : ctx.lineTo(cx, cy);
+  });
+  ctx.stroke();
+  
+  // Draw return departure (orange)
+  ctx.strokeStyle = '#ff8844'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  retStart.forEach((p, i) => {
+    const {cx, cy} = toC(p);
+    i === 0 ? ctx.moveTo(cx, cy) : ctx.lineTo(cx, cy);
+  });
+  ctx.stroke();
+  
+  // Junction points
+  [{x:MD, z:LR}, {x:MD, z:-LR}].forEach(p => {
+    const {cx, cy} = toC(p);
+    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2);
+    ctx.fillStyle = '#ff4444'; ctx.fill();
+  });
+  
+  // Flyby circle reference (dashed)
+  const mc = toC({x: MD, z: 0});
+  const rPx = (LR / (xMax - xMin)) * canvas.width;
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 0.5;
+  ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.arc(mc.cx, mc.cy, rPx, 0, Math.PI*2); ctx.stroke();
+  ctx.setLineDash([]);
+  
+  cell.appendChild(canvas);
+  const p = document.createElement('p');
+  p.innerHTML = `<b>${label}</b><br>flyby=${flybyPts}pts tang=${tangentScale} ${style}`;
+  cell.appendChild(p);
+  container.appendChild(cell);
+}
+
+const c = document.getElementById('variants');
+
+// Row 1: Current setup vs more flyby points  
+drawVariant(c, 'A: Current (20pts, linear)', 20, 5, 'linear');
+drawVariant(c, 'B: 40pts flyby, linear', 40, 5, 'linear');
+drawVariant(c, 'C: 60pts flyby, linear', 60, 5, 'linear');
+
+// Row 2: Hermite with different tangent scales
+drawVariant(c, 'D: Hermite tang=3', 20, 3, 'hermite');
+drawVariant(c, 'E: Hermite tang=5', 20, 5, 'hermite');
+drawVariant(c, 'F: Hermite tang=8', 20, 8, 'hermite');
+
+// Row 3: Hermite + more flyby points
+drawVariant(c, 'G: 40pts Hermite t=5', 40, 5, 'hermite');
+drawVariant(c, 'H: 40pts Hermite t=8', 40, 8, 'hermite');
+drawVariant(c, 'I: 60pts Hermite t=5', 60, 5, 'hermite');
+
+// Row 4: More combinations
+drawVariant(c, 'J: 40pts Hermite t=3', 40, 3, 'hermite');
+drawVariant(c, 'K: 60pts Hermite t=3', 60, 3, 'hermite');
+drawVariant(c, 'L: 60pts Hermite t=8', 60, 8, 'hermite');
+</script>
+</body>
+</html>

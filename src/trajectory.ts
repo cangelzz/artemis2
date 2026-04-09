@@ -160,9 +160,10 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
     points.push(pt);
   }
 
-  // ── Flyby: semicircle around Moon far side, 20 points ──
+  // ── Flyby: semicircle around Moon far side, 60 points ──
+  // More points = smoother arc at junctions
   // Flyby goes from +Z (+π/2) around far side to -Z (-π/2)
-  const flybyN = 20;
+  const flybyN = 60;
   for (let i = 0; i < flybyN; i++) {
     const angle = (Math.PI / 2) - (i / (flybyN - 1)) * Math.PI;
     points.push(new THREE.Vector3(
@@ -172,26 +173,38 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
     ));
   }
 
-  // ── Return: flyby exit → Earth, sine-bulge in -Z ──
-  // Z = linear_interp - OFFSET*sin(πt)
-  // Near Moon (t≈0): Z ≈ flybyExit.z (natural)
-  // Middle (t=0.5): Z = midpoint - OFFSET (pushed to -Z side → crosses outbound!)
-  // Near Earth (t≈1): Z ≈ 0 (natural, converges with outbound)
+  // ── Return: Hermite from flyby exit → Earth ──
+  // Departure tangent = -X (circle tangent at θ=-π/2)
+  // Arrival tangent = -X (approaching Earth from +X side)
   const flybyExit = new THREE.Vector3(
     MOON_DISTANCE + LOOP_R * Math.cos(-Math.PI / 2),
     -0.05,
     LOOP_R * Math.sin(-Math.PI / 2),   // -Z side (left)
   );
   const earthEnd = new THREE.Vector3(0, -0.3, 0);
+  const departureTangent = new THREE.Vector3(-1, 0, 0); // -X, matching circle tangent at exit
+  const earthArrivalTangent = new THREE.Vector3(-1, 0, 0); // arriving at Earth from +X
+  const retChord = flybyExit.distanceTo(earthEnd) * 0.8;
+
   const retN = 60;
   for (let i = 1; i <= retN; i++) {
-    const tLinear = i / retN;
-    const t = tLinear;  // uniform is fine since flyby→return junction is already smooth
-    const x = flybyExit.x + (earthEnd.x - flybyExit.x) * t;
-    const y = flybyExit.y + (earthEnd.y - flybyExit.y) * t;
-    const zLinear = flybyExit.z + (earthEnd.z - flybyExit.z) * t;
-    const z = zLinear + OFFSET * Math.sin(Math.PI * t);
-    points.push(new THREE.Vector3(x, y, z));
+    const t = i / retN;
+
+    // Cubic Hermite
+    const h00 = 2*t*t*t - 3*t*t + 1;
+    const h10 = t*t*t - 2*t*t + t;
+    const h01 = -2*t*t*t + 3*t*t;
+    const h11 = t*t*t - t*t;
+
+    const pt = flybyExit.clone().multiplyScalar(h00)
+      .add(departureTangent.clone().multiplyScalar(h10 * retChord))
+      .add(earthEnd.clone().multiplyScalar(h01))
+      .add(earthArrivalTangent.clone().multiplyScalar(h11 * retChord));
+
+    // Apply Z sine-bulge for figure-8 crossing (opposite of outbound)
+    pt.z += OFFSET * Math.sin(Math.PI * t);
+
+    points.push(pt);
   }
 
   // ── Splashdown ──
