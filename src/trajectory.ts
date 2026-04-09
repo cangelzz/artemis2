@@ -135,8 +135,8 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   // Flyby circle at θ=π/2 has tangent = +X, so approach should be +X
   const arrivalTangent = new THREE.Vector3(1, 0, 0);
 
-  // Chord length for tangent scaling
-  const chord = spiralEnd.distanceTo(flybyEntry);
+  // Chord length for tangent scaling (0.6 = tighter curve at junction)
+  const chord = spiralEnd.distanceTo(flybyEntry) * 0.6;
 
   const outN = 60;
   for (let i = 1; i < outN; i++) {
