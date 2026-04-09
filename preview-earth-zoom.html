@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Earth Area Zoom Preview</title>
+<style>
+body { background: #111; color: #ccc; font-family: monospace; margin: 20px; }
+h1 { color: #ff8844; }
+canvas { border: 1px solid #333; margin: 5px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; }
+.cell { text-align: center; }
+.cell p { font-size: 11px; color: #888; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Earth Area Zoom — Spiral → Outbound Junction</h1>
+<p>Current settings, zoomed to Earth area. Varying outChord and arrChord to smooth the junction.</p>
+<div class="row" id="variants"></div>
+
+<script>
+const ER=1, MD=40, HA=4, INCL=28.5*Math.PI/180, LR=4, OFF=2;
+const leoR=ER+0.08, hSM=(ER+0.3+HA)/2, hE=(HA-ER-0.3)/(HA+ER+0.3);
+
+function build(outCh, arrCh, rev) {
+  const pts = [];
+  const totalAngle = rev * 2 * Math.PI;
+  
+  for (let i = 0; i < 120; i++) {
+    const f = i/119, a = f*totalAngle;
+    const bl = 1/(1+Math.exp(-(f-0.3)/0.12));
+    const hl = (f-0.3)*totalAngle;
+    const rH = hSM*(1-hE*hE)/(1+hE*Math.cos(hl));
+    const r = leoR + (rH-leoR)*bl;
+    pts.push({ x: Math.cos(a)*r, z: Math.sin(a)*r*Math.cos(INCL), type:'spiral' });
+  }
+  
+  const se = pts[pts.length-1];
+  const fe = { x: MD, z: LR };
+  const endA = rev * 2 * Math.PI;
+  const tx = -Math.sin(endA);
+  const tz = Math.cos(INCL)*Math.cos(endA);
+  const tLen = Math.sqrt(tx*tx+tz*tz);
+  const tang = { x:tx/tLen, z:tz/tLen };
+  const arr = { x:1, z:0 };
+  const dist = Math.sqrt((fe.x-se.x)**2+(fe.z-se.z)**2);
+  const ocs=dist*outCh, acs=dist*arrCh;
+  
+  for (let i=1;i<60;i++) {
+    const tLin=i/60, t=tLin*tLin;
+    const h00=2*t*t*t-3*t*t+1, h10=t*t*t-2*t*t+t, h01=-2*t*t*t+3*t*t, h11=t*t*t-t*t;
+    const px=h00*se.x+h10*tang.x*ocs+h01*fe.x+h11*arr.x*acs;
+    let pz=h00*se.z+h10*tang.z*ocs+h01*fe.z+h11*arr.z*acs;
+    pz -= OFF*Math.sin(Math.PI*t);
+    pts.push({x:px,z:pz,type:'outbound'});
+  }
+  return pts;
+}
+
+function draw(container, label, outCh, arrCh, rev) {
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  const canvas = document.createElement('canvas');
+  canvas.width = 450; canvas.height = 400;
+  const ctx = canvas.getContext('2d');
+  
+  const pts = build(outCh, arrCh, rev);
+  
+  // ZOOMED to Earth area
+  const xMin=-5, xMax=12, zMin=-5, zMax=5;
+  function toC(p){return{cx:(p.x-xMin)/(xMax-xMin)*canvas.width,cy:canvas.height-(p.z-zMin)/(zMax-zMin)*canvas.height};}
+  
+  ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#1a1a1a';ctx.lineWidth=0.5;
+  for(let x=xMin;x<=xMax;x++){const{cx}=toC({x,z:0});ctx.beginPath();ctx.moveTo(cx,0);ctx.lineTo(cx,canvas.height);ctx.stroke();}
+  for(let z=zMin;z<=zMax;z++){const{cy}=toC({x:0,z});ctx.beginPath();ctx.moveTo(0,cy);ctx.lineTo(canvas.width,cy);ctx.stroke();}
+  
+  const e=toC({x:0,z:0});
+  ctx.beginPath();ctx.arc(e.cx,e.cy,(ER/(xMax-xMin))*canvas.width,0,Math.PI*2);ctx.fillStyle='#224488';ctx.fill();
+  ctx.fillStyle='#88ccff';ctx.font='10px monospace';ctx.fillText('Earth',e.cx-14,e.cy-15);
+  
+  // Draw spiral (green)
+  ctx.strokeStyle='#44cc66';ctx.lineWidth=1.5;ctx.beginPath();
+  let started=false;
+  pts.filter(p=>p.type==='spiral').forEach(p=>{
+    const{cx,cy}=toC(p);
+    if(!started){ctx.moveTo(cx,cy);started=true;}else ctx.lineTo(cx,cy);
+  });
+  ctx.stroke();
+  
+  // Draw outbound (orange)
+  ctx.strokeStyle='#ff8844';ctx.lineWidth=2;ctx.beginPath();
+  started=false;
+  pts.filter(p=>p.type==='outbound').forEach(p=>{
+    const{cx,cy}=toC(p);
+    if(!started){ctx.moveTo(cx,cy);started=true;}else ctx.lineTo(cx,cy);
+  });
+  ctx.stroke();
+  
+  // Junction point
+  const sp = pts.filter(p=>p.type==='spiral');
+  const jp = toC(sp[sp.length-1]);
+  ctx.beginPath();ctx.arc(jp.cx,jp.cy,4,0,Math.PI*2);ctx.fillStyle='#ff4444';ctx.fill();
+  
+  cell.appendChild(canvas);
+  const p=document.createElement('p');
+  p.innerHTML=`<b>${label}</b><br>outCh=${outCh} arrCh=${arrCh} rev=${rev}`;
+  cell.appendChild(p);
+  container.appendChild(cell);
+}
+
+const c = document.getElementById('variants');
+
+// Current
+draw(c, 'A: Current', 0.6, 2.0, 1.78);
+
+// Vary outChord (controls spiral departure "pull")
+draw(c, 'B: outCh=0.3', 0.3, 2.0, 1.78);
+draw(c, 'C: outCh=0.4', 0.4, 2.0, 1.78);
+draw(c, 'D: outCh=0.8', 0.8, 2.0, 1.78);
+draw(c, 'E: outCh=1.0', 1.0, 2.0, 1.78);
+draw(c, 'F: outCh=1.5', 1.5, 2.0, 1.78);
+
+// Vary rev (more/less spiral before departure)
+draw(c, 'G: rev=1.75', 0.6, 2.0, 1.75);
+draw(c, 'H: rev=1.80', 0.6, 2.0, 1.80);
+draw(c, 'I: rev=1.82', 0.6, 2.0, 1.82);
+draw(c, 'J: rev=1.85', 0.6, 2.0, 1.85);
+
+// Combos
+draw(c, 'K: outCh=0.8 rev=1.80', 0.8, 2.0, 1.80);
+draw(c, 'L: outCh=1.0 rev=1.80', 1.0, 2.0, 1.80);
+draw(c, 'M: outCh=0.8 rev=1.82', 0.8, 2.0, 1.82);
+draw(c, 'N: outCh=1.0 rev=1.82', 1.0, 2.0, 1.82);
+draw(c, 'O: outCh=1.2 rev=1.80', 1.2, 2.0, 1.80);
+draw(c, 'P: outCh=1.2 rev=1.82', 1.2, 2.0, 1.82);
+</script>
+</body>
+</html>

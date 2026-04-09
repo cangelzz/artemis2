@@ -137,7 +137,7 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
 
   // Chord length for tangent scaling
   const chordLen = spiralEnd.distanceTo(flybyEntry);
-  const outChord = chordLen * 0.6;   // departure chord (spiral end)
+  const outChord = chordLen * 0.4;   // departure chord (spiral end)
   const arrChord = chordLen * 2.0;   // arrival chord (flyby entry) — variant F
 
   const outN = 60;
