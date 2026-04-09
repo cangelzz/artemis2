@@ -135,8 +135,10 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   // Flyby circle at θ=π/2 has tangent = +X, so approach should be +X
   const arrivalTangent = new THREE.Vector3(1, 0, 0);
 
-  // Chord length for tangent scaling (0.6 = tighter curve at junction)
-  const chord = spiralEnd.distanceTo(flybyEntry) * 0.6;
+  // Chord length for tangent scaling
+  const chordLen = spiralEnd.distanceTo(flybyEntry);
+  const outChord = chordLen * 0.6;   // departure chord (spiral end)
+  const arrChord = chordLen * 2.0;   // arrival chord (flyby entry) — variant F
 
   const outN = 60;
   for (let i = 1; i < outN; i++) {
@@ -150,9 +152,9 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
     const h11 = t*t*t - t*t;
 
     const pt = spiralEnd.clone().multiplyScalar(h00)
-      .add(spiralTangent.clone().multiplyScalar(h10 * chord))
+      .add(spiralTangent.clone().multiplyScalar(h10 * outChord))
       .add(flybyEntry.clone().multiplyScalar(h01))
-      .add(arrivalTangent.clone().multiplyScalar(h11 * chord));
+      .add(arrivalTangent.clone().multiplyScalar(h11 * arrChord));
 
     // Apply Z sine-bulge for figure-8 crossing
     pt.z -= OFFSET * Math.sin(Math.PI * t);
