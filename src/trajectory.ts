@@ -95,9 +95,9 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   const LOOP_R = 4;
   const OFFSET = 2;
 
-  // ── Spiral: LEO → HEO, 1.75 revolutions, 120 points ──
+  // ── Spiral: LEO → HEO, 1.78 revolutions, 120 points ──
   const spiralN = 120;
-  const totalAngle = 1.75 * 2 * Math.PI;
+  const totalAngle = 1.78 * 2 * Math.PI;
   for (let i = 0; i < spiralN; i++) {
     const frac = i / (spiralN - 1);
     const angle = frac * totalAngle;
@@ -112,28 +112,52 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
     ));
   }
 
-  // ── Outbound: spiral end → flyby entry, sine-bulge in Z ──
-  // Z = linear_interp + OFFSET*sin(πt)
-  // Near Earth (t≈0): Z ≈ spiralEnd.z (natural, no spread)
-  // Middle (t=0.5): Z = midpoint + OFFSET (pushed to +Z side)
-  // Near Moon (t≈1): Z ≈ flybyEntry.z (matches flyby, no kink)
+  // ── Outbound: spiral end → flyby entry ──
+  // Use cubic Hermite interpolation so the outbound STARTS along
+  // the spiral's tangent direction (pure +X at angle=3.5π) and
+  // smoothly bends toward the flyby entry. No visible kink.
   const spiralEnd = points[points.length - 1].clone();
   const flybyEntry = new THREE.Vector3(
     MOON_DISTANCE + LOOP_R * Math.cos(Math.PI / 2),
     -0.05,
     LOOP_R * Math.sin(Math.PI / 2),   // +Z side (right)
   );
+
+  // Spiral tangent at end (angle = 1.78*2π)
+  const endAngle = 1.78 * 2 * Math.PI;
+  const spiralTangent = new THREE.Vector3(
+    -Math.sin(endAngle),
+    Math.sin(INCL) * Math.cos(endAngle),
+    Math.cos(INCL) * Math.cos(endAngle),
+  ).normalize();
+
+  // Arrival tangent: direction pointing into the flyby entry
+  // Flyby circle at θ=π/2 has tangent = +X, so approach should be +X
+  const arrivalTangent = new THREE.Vector3(1, 0, 0);
+
+  // Chord length for tangent scaling
+  const chord = spiralEnd.distanceTo(flybyEntry);
+
   const outN = 60;
   for (let i = 1; i < outN; i++) {
-    // Use ease-in (t²) so points are denser near spiral end (small t)
-    // and sparser in the middle where the path is straight
     const tLinear = i / outN;
-    const t = tLinear * tLinear;  // ease-in: denser at start
-    const x = spiralEnd.x + (flybyEntry.x - spiralEnd.x) * t;
-    const y = spiralEnd.y + (flybyEntry.y - spiralEnd.y) * t;
-    const zLinear = spiralEnd.z + (flybyEntry.z - spiralEnd.z) * t;
-    const z = zLinear - OFFSET * Math.sin(Math.PI * t);
-    points.push(new THREE.Vector3(x, y, z));
+    const t = tLinear * tLinear;  // ease-in: denser near spiral end
+
+    // Cubic Hermite basis functions
+    const h00 = 2*t*t*t - 3*t*t + 1;
+    const h10 = t*t*t - 2*t*t + t;
+    const h01 = -2*t*t*t + 3*t*t;
+    const h11 = t*t*t - t*t;
+
+    const pt = spiralEnd.clone().multiplyScalar(h00)
+      .add(spiralTangent.clone().multiplyScalar(h10 * chord))
+      .add(flybyEntry.clone().multiplyScalar(h01))
+      .add(arrivalTangent.clone().multiplyScalar(h11 * chord));
+
+    // Apply Z sine-bulge for figure-8 crossing
+    pt.z -= OFFSET * Math.sin(Math.PI * t);
+
+    points.push(pt);
   }
 
   // ── Flyby: semicircle around Moon far side, 20 points ──
