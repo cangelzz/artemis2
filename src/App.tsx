@@ -199,7 +199,7 @@ function TrajectoryLine({
   // Split the trajectory at flyby midpoint (progress=0.60, the far side)
   const { outbound, ret } = useMemo(() => {
     const splitT = mapProgress(0.60); // flyby closest approach
-    const numPts = 500;
+    const numPts = 3000;
     const outPts: THREE.Vector3[] = [];
     const retPts: THREE.Vector3[] = [];
     for (let i = 0; i <= numPts; i++) {

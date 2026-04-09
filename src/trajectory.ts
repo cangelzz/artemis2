@@ -95,8 +95,8 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   const LOOP_R = 4;
   const OFFSET = 2;
 
-  // ── Spiral: LEO → HEO, 1.75 revolutions, 60 points ──
-  const spiralN = 60;
+  // ── Spiral: LEO → HEO, 1.75 revolutions, 120 points ──
+  const spiralN = 120;
   const totalAngle = 1.75 * 2 * Math.PI;
   for (let i = 0; i < spiralN; i++) {
     const frac = i / (spiralN - 1);
@@ -123,9 +123,12 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
     -0.05,
     LOOP_R * Math.sin(Math.PI / 2),   // +Z side (right)
   );
-  const outN = 30;
+  const outN = 60;
   for (let i = 1; i < outN; i++) {
-    const t = i / outN;
+    // Use ease-in (t²) so points are denser near spiral end (small t)
+    // and sparser in the middle where the path is straight
+    const tLinear = i / outN;
+    const t = tLinear * tLinear;  // ease-in: denser at start
     const x = spiralEnd.x + (flybyEntry.x - spiralEnd.x) * t;
     const y = spiralEnd.y + (flybyEntry.y - spiralEnd.y) * t;
     const zLinear = spiralEnd.z + (flybyEntry.z - spiralEnd.z) * t;
@@ -156,9 +159,10 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
     LOOP_R * Math.sin(-Math.PI / 2),   // -Z side (left)
   );
   const earthEnd = new THREE.Vector3(0, -0.3, 0);
-  const retN = 30;
+  const retN = 60;
   for (let i = 1; i <= retN; i++) {
-    const t = i / retN;
+    const tLinear = i / retN;
+    const t = tLinear;  // uniform is fine since flyby→return junction is already smooth
     const x = flybyExit.x + (earthEnd.x - flybyExit.x) * t;
     const y = flybyExit.y + (earthEnd.y - flybyExit.y) * t;
     const zLinear = flybyExit.z + (earthEnd.z - flybyExit.z) * t;
@@ -169,81 +173,28 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   // ── Splashdown ──
   points.push(new THREE.Vector3(-0.2, -EARTH_RADIUS, -0.3));
 
-  return new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
+  // Use centripetal parameterization for smoothest join
+  return new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.5);
 }
 
 /* ------------------------------------------------------------------ */
-/*  Progress → Curve-t remapping                                       */
+/*  Progress mapping — uniform speed along the path                    */
 /* ------------------------------------------------------------------ */
 
 /**
- * Mission-progress for each control point (140 points).
- */
-const WAYPOINT_PROGRESS = (() => {
-  const wp: number[] = [];
-  const spiral = 60, out = 29, flyby = 20, ret = 30, end = 1;
-  // Spiral: 0 → 0.10
-  for (let i = 0; i < spiral; i++) wp.push((i / spiral) * 0.10);
-  // Outbound: 0.10 → 0.50
-  for (let i = 0; i < out; i++) wp.push(0.10 + (i / out) * 0.40);
-  // Flyby: 0.50 → 0.70
-  for (let i = 0; i < flyby; i++) wp.push(0.50 + (i / flyby) * 0.20);
-  // Return: 0.70 → 0.97
-  for (let i = 0; i < ret; i++) wp.push(0.70 + (i / ret) * 0.27);
-  // Splashdown
-  wp.push(1.00);
-  return wp;
-})();
-
-/**
- * Build a mapping function: mission progress (0–1) → curve arc-length t (0–1).
- *
- * CatmullRom's getPointAt(t) uses arc-length parameterization, so the
- * tiny flyby loop occupies only ~5% of the total curve t-range despite
- * representing 10% of mission time. This function compensates by finding
- * each control point's actual arc-length fraction, then linearly
- * interpolating between (missionProgress, arcFraction) pairs.
+ * Simple arc-length based progress mapping.
+ * progress 0→1 maps linearly to curve arc-length 0→1.
+ * No per-segment speed adjustments — the spacecraft moves at
+ * constant visual speed along the entire path.
+ * This eliminates the jarring speed changes between segments.
  */
 export function buildProgressMapping(
   curve: THREE.CatmullRomCurve3,
 ): (progress: number) => number {
-  const controlPoints = curve.points;
-  const numSamples = 5000;
-
-  // Pre-sample the curve
-  const samples: THREE.Vector3[] = [];
-  for (let i = 0; i <= numSamples; i++) {
-    samples.push(curve.getPointAt(i / numSamples));
-  }
-
-  // Find the arc-length fraction (t) closest to each control point
-  const arcFractions: number[] = [];
-  for (const cp of controlPoints) {
-    let bestT = 0;
-    let minDist = Infinity;
-    for (let i = 0; i <= numSamples; i++) {
-      const d = samples[i].distanceToSquared(cp);
-      if (d < minDist) {
-        minDist = d;
-        bestT = i / numSamples;
-      }
-    }
-    arcFractions.push(bestT);
-  }
-
-  // Return the mapper: given mission progress, lerp between the pairs
+  // CatmullRomCurve3.getPointAt() already uses arc-length parameterization.
+  // So we just return the identity function — progress = arc-length fraction.
   return function mapProgressToCurveT(progress: number): number {
-    if (progress <= 0) return 0;
-    if (progress >= 1) return 1;
-
-    for (let i = 0; i < WAYPOINT_PROGRESS.length - 1; i++) {
-      if (progress <= WAYPOINT_PROGRESS[i + 1]) {
-        const span = WAYPOINT_PROGRESS[i + 1] - WAYPOINT_PROGRESS[i];
-        const frac = span > 0 ? (progress - WAYPOINT_PROGRESS[i]) / span : 0;
-        return arcFractions[i] + frac * (arcFractions[i + 1] - arcFractions[i]);
-      }
-    }
-    return 1;
+    return Math.min(Math.max(progress, 0), 1);
   };
 }
 
