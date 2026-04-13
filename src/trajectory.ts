@@ -1,254 +1,274 @@
 /**
- * Artemis II trajectory data — based on real NASA mission parameters.
+ * Artemis II trajectory — physically-based free-return orbit.
  *
- * REAL MISSION DATA (launched April 1, 2026):
- *   - Launch: April 1, 2026 22:35:12 UTC from Kennedy LC-39B
+ * REAL MISSION DATA (NASA, launched April 1, 2026):
+ *   - Launch: 2026-04-01 22:35:12 UTC from Kennedy LC-39B
  *   - Mission duration: ~10 days
- *   - Day 1: LEO → High Earth Orbit (apogee 44,000 mi / 71,000 km)
- *   - Day 2: Trans-Lunar Injection (5 min 49 sec burn)
- *   - Day 6: Lunar flyby — closest approach 4,067 mi (6,545 km) from
- *            far-side surface at 23:00 UTC April 6
- *   - Farthest from Earth: 252,756 mi (406,771 km) — broke Apollo 13 record
- *   - Day 7–10: Free-return coast back to Earth
+ *   - LEO parking orbit: 185 km altitude, 28.5° inclination
+ *   - TLI burn: 5m49s, sends spacecraft toward Moon
+ *   - Translunar coast: ~4 days
+ *   - Lunar flyby: closest approach 6,545 km from far-side surface
+ *     (8,282 km from Moon center)
+ *   - Farthest from Earth: 406,771 km (record)
+ *   - Free-return coast: ~4 days back to Earth
  *   - Splashdown: ~April 11, Pacific Ocean near San Diego
  *
- * Scene scale: 1 unit ≈ 6,371 km (1 Earth-radius).
- * Moon distance compressed to 40 units (real ≈ 60.3) for visual clarity.
+ * COORDINATE SYSTEM (Synodic / Co-Rotating Frame):
+ *   - Earth at origin
+ *   - Moon fixed at (+MOON_DISTANCE, 0, 0)
+ *   - Y in the Earth-Moon orbital plane
+ *   - Z perpendicular to lunar orbital plane
  *
- * Closest flyby in real units:
- *   Surface distance: 6,545 km ≈ 1.03 Earth-radii
- *   From Moon center: 6,545 + 1,737 = 8,282 km ≈ 1.30 Earth-radii
- *   In scene scale (×40/60.3): ≈ 0.86 units from Moon center
+ * In this frame, a free-return trajectory forms a figure-8.
+ *
+ * SCALE: 1 scene unit = 1 Earth radius = 6,371 km
+ *
+ * METHOD:
+ *   Patched Conics: Keplerian transfer ellipse (Earth-focused) +
+ *   hyperbolic flyby (Moon-focused) + return ellipse (Earth-focused).
+ *   Each segment uses real orbital mechanics equations.
+ *   The segments connect at the Moon's Sphere of Influence boundary.
  */
 
 import * as THREE from 'three';
 
-/** Distance from Earth center to Moon center (scene units) */
-export const MOON_DISTANCE = 40;
+/* ================================================================== */
+/*  Physical constants  (1 unit = R_Earth = 6,371 km)                 */
+/* ================================================================== */
 
-/** Earth radius (scene units) */
 export const EARTH_RADIUS = 1;
+export const MOON_RADIUS = 0.2727;  // 1,737.4 / 6,371
+export const MOON_DISTANCE = 60.34; // 384,400 / 6,371
 
-/** Moon radius (scene units) — real ratio ≈ 0.273 */
-export const MOON_RADIUS = 0.273;
+const MU_EARTH = 398600.4418; // km^3/s^2
+const MU_MOON = 4902.8;       // km^3/s^2
+const R_E_KM = 6371;          // km
 
-/** Closest flyby distance from Moon center (scene units) — real: 8,282 km */
-const FLYBY_RADIUS = 0.86;
+const LEO_R = (R_E_KM + 185) / R_E_KM; // 1.029 R_E
+const FLYBY_PERI = 8282 / R_E_KM;       // 1.30 R_E (from Moon center)
+const INCL = (28.5 * Math.PI) / 180;    // launch inclination
 
-/**
- * High Earth orbit apogee (scene units).
- * Real: 71,000 km ≈ 11.1 Earth-radii ≈ 7.4 units.
- * Visually scaled to ~4 units for clarity (matches NASA animation proportions).
- */
-const HEO_APOGEE = 4;
-
-/** Sun direction (unit vector, only for lighting) */
 export const SUN_DIR = new THREE.Vector3(1, 0.3, 0.5).normalize();
 
-/* ------------------------------------------------------------------ */
-/*  Mission timeline (fraction of 10-day mission)                      */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  Mission timeline                                                   */
+/* ================================================================== */
+
 export const MISSION_TIMELINE = {
-  launch:    0.0,       // Day 0 — T+0
-  leo:       0.004,     // Day 0 — LEO orbit
-  heo:       0.03,      // Day 0 — High Earth Orbit
-  tli:       0.10,      // Day 1 — Trans-Lunar Injection burn
-  coast1:    0.22,      // Day 2-3 — outbound coast
-  coast2:    0.42,      // Day 4-5 — approaching Moon
-  approach:  0.52,      // Day 5-6 — entering Moon's SOI
-  flyby:     0.60,      // Day 6 23:00 UTC — closest approach (far side)
-  depart:    0.67,      // Day 6-7 — departing Moon
-  return1:   0.78,      // Day 7-8 — return coast (figure-8 crossover)
-  return2:   0.90,      // Day 9 — approaching Earth
-  reentry:   0.95,      // Day 10 — atmospheric entry at 25,000 mph
-  splashdown: 1.0,      // Day 10 — Pacific Ocean near San Diego
+  launch:     0.0,
+  leo:        0.003,
+  tli:        0.01,
+  coast1:     0.15,
+  coast2:     0.40,
+  approach:   0.52,
+  flyby:      0.60,
+  depart:     0.68,
+  return1:    0.80,
+  return2:    0.90,
+  reentry:    0.96,
+  splashdown: 1.0,
 };
 
-/* ------------------------------------------------------------------ */
-/*  Trajectory generation                                              */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  Orbit helpers                                                      */
+/* ================================================================== */
 
-/**
- * Build a CatmullRom spline representing the Artemis II free-return
- * trajectory based on real NASA mission data.
- *
- * The spacecraft:
- * 1. Launches to LEO
- * 2. Burns to ~44,000 mi high Earth orbit (23.5 hr period)
- * 3. TLI burn sends it toward the Moon
- * 4. Coasts for ~4 days
- * 5. Swings around the Moon's FAR SIDE at 4,067 mi (6,545 km)
- * 6. Free-returns to Earth without additional propulsion
- *
- * @param moonAngle  The Moon's orbital angle (radians) at mission start.
- */
+function ellipseR(a: number, e: number, theta: number): number {
+  return (a * (1 - e * e)) / (1 + e * Math.cos(theta));
+}
+
+function hyperR(a: number, e: number, theta: number): number {
+  return (a * (e * e - 1)) / (1 + e * Math.cos(theta));
+}
+
+/* ================================================================== */
+/*  Trajectory builder                                                 */
+/* ================================================================== */
+
 export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
-  const points: THREE.Vector3[] = [];
+  const pts: THREE.Vector3[] = [];
 
-  const INCL = (28.5 * Math.PI) / 180;
-  const e1 = new THREE.Vector3(1, 0, 0);
-  const e2 = new THREE.Vector3(0, Math.sin(INCL), Math.cos(INCL));
+  // ── Compute orbital parameters ──
 
-  const leoR = EARTH_RADIUS + 0.08;
-  const heoSemiMajor = (EARTH_RADIUS + 0.3 + HEO_APOGEE) / 2;
-  const heoEcc = (HEO_APOGEE - EARTH_RADIUS - 0.3) / (HEO_APOGEE + EARTH_RADIUS + 0.3);
-  const LOOP_R = 4;
-  const OFFSET = 2;
+  // TLI ellipse: perigee = LEO, apogee = Moon distance
+  const pKm = LEO_R * R_E_KM;
+  const aKm_tli = 384400;
+  const a_tli = (pKm + aKm_tli) / 2 / R_E_KM;
+  const e_tli = (aKm_tli - pKm) / (aKm_tli + pKm);
 
-  // ── Spiral: LEO → HEO, 1.78 revolutions, 120 points ──
-  const spiralN = 120;
-  const totalAngle = 1.78 * 2 * Math.PI;
-  for (let i = 0; i < spiralN; i++) {
-    const frac = i / (spiralN - 1);
-    const angle = frac * totalAngle;
-    const blend = 1 / (1 + Math.exp(-(frac - 0.30) / 0.12));
-    const heoLocal = (frac - 0.30) * totalAngle;
-    const rHeo = heoSemiMajor * (1 - heoEcc * heoEcc) / (1 + heoEcc * Math.cos(heoLocal));
-    const r = leoR + (rHeo - leoR) * blend;
-    points.push(new THREE.Vector3(
-      Math.cos(angle) * r,
-      Math.sin(angle) * r * Math.sin(INCL),
-      Math.sin(angle) * r * Math.cos(INCL),
-    ));
+  // Flyby hyperbola
+  const vSC = Math.sqrt(MU_EARTH * (2 / aKm_tli - 1 / (a_tli * R_E_KM)));
+  const vMoon = Math.sqrt(MU_EARTH / aKm_tli);
+  const vInf = Math.abs(vSC - vMoon);
+  const aHyp = MU_MOON / (vInf * vInf) / R_E_KM;
+  const eHyp = FLYBY_PERI / aHyp + 1;
+  const thetaMaxHyp = Math.acos(-1 / eHyp);
+
+  // Return ellipse: perigee near Earth surface, apogee ~Moon distance
+  const retPer = (R_E_KM + 60) / R_E_KM;
+  const retApo = 400000 / R_E_KM;
+  const a_ret = (retPer + retApo) / 2;
+  const e_ret = (retApo - retPer) / (retApo + retPer);
+
+  // ================================================================
+  //  SEGMENT 1: LEO parking orbit — 1.5 revs
+  // ================================================================
+  for (let i = 0; i <= 60; i++) {
+    const ang = (i / 60) * 1.5 * 2 * Math.PI;
+    const x = LEO_R * Math.cos(ang);
+    const ip = LEO_R * Math.sin(ang);
+    pts.push(new THREE.Vector3(x, ip * Math.cos(INCL), ip * Math.sin(INCL)));
   }
 
-  // ── Outbound: spiral end → flyby entry ──
-  // Use cubic Hermite interpolation so the outbound STARTS along
-  // the spiral's tangent direction (pure +X at angle=3.5π) and
-  // smoothly bends toward the flyby entry. No visible kink.
-  const spiralEnd = points[points.length - 1].clone();
-  const flybyEntry = new THREE.Vector3(
-    MOON_DISTANCE + LOOP_R * Math.cos(Math.PI / 2),
-    -0.05,
-    LOOP_R * Math.sin(Math.PI / 2),   // +Z side (right)
-  );
+  // ================================================================
+  //  SEGMENT 2: TLI outbound — Earth to Moon SOI
+  //
+  //  In the synodic frame, the outbound trajectory goes from
+  //  Earth toward Moon (+X), curving through +Y (upper lobe
+  //  of figure-8).
+  //
+  //  We orient the TLI ellipse so:
+  //    - Perigee is near Earth, on the -X side (opposite Moon)
+  //    - The orbit sweeps through +Y toward the Moon (+X)
+  //    - Apogee is near Moon distance, on the +X side
+  //
+  //  argument of perigee (omega) = PI
+  //  This means: position angle = theta + omega = theta + PI
+  //    theta=0  → angle=PI  → (-r, 0) [perigee, -X side] ✓
+  //    theta=PI → angle=2PI → (+r, 0) [apogee, +X side = Moon] ✓
+  //    theta=PI/2 → angle=3PI/2 → r*cos(3PI/2)=0, r*sin(3PI/2)=-r
+  //    Hmm, that goes through -Y... we want +Y.
+  //
+  //  For +Y: omega = -PI (or equivalently omega = PI with the
+  //  orbit traversed in the other angular direction).
+  //  Let's use: position angle = -(theta - PI) = PI - theta
+  //    theta=0 → angle=PI → (-r, 0) [perigee, -X] ✓
+  //    theta=PI → angle=0 → (+r, 0) [apogee, +X = Moon] ✓
+  //    theta=PI/2 → angle=PI/2 → (0, +r) [+Y lobe] ✓
+  // ================================================================
 
-  // Spiral tangent at end (angle = 1.78*2π)
-  const endAngle = 1.78 * 2 * Math.PI;
-  const spiralTangent = new THREE.Vector3(
-    -Math.sin(endAngle),
-    Math.sin(INCL) * Math.cos(endAngle),
-    Math.cos(INCL) * Math.cos(endAngle),
-  ).normalize();
+  const thetaEndOut = Math.PI * 0.96;
+  for (let i = 0; i <= 150; i++) {
+    const f = i / 150;
+    const theta = f * thetaEndOut;
+    const r = ellipseR(a_tli, e_tli, theta);
 
-  // Arrival tangent: direction pointing into the flyby entry
-  // Flyby circle at θ=π/2 has tangent = +X, so approach should be +X
-  const arrivalTangent = new THREE.Vector3(1, 0, 0);
+    // Position in synodic frame
+    const angle = Math.PI - theta; // sweep from -X through +Y to +X
+    const x = r * Math.cos(angle);
+    const y = r * Math.sin(angle);
 
-  // Chord length for tangent scaling
-  const chordLen = spiralEnd.distanceTo(flybyEntry);
-  const outChord = chordLen * 0.4;   // departure chord (spiral end)
-  const arrChord = chordLen * 2.0;   // arrival chord (flyby entry) — variant F
+    // Z: inclination effect fading as we approach ecliptic
+    const incFade = Math.max(0, 1 - f * 1.2);
+    const z = r * Math.sin(theta) * Math.sin(INCL) * incFade * 0.12;
 
-  const outN = 60;
-  for (let i = 1; i < outN; i++) {
-    const tLinear = i / outN;
-    const t = tLinear * tLinear;  // ease-in: denser near spiral end
-
-    // Cubic Hermite basis functions
-    const h00 = 2*t*t*t - 3*t*t + 1;
-    const h10 = t*t*t - 2*t*t + t;
-    const h01 = -2*t*t*t + 3*t*t;
-    const h11 = t*t*t - t*t;
-
-    const pt = spiralEnd.clone().multiplyScalar(h00)
-      .add(spiralTangent.clone().multiplyScalar(h10 * outChord))
-      .add(flybyEntry.clone().multiplyScalar(h01))
-      .add(arrivalTangent.clone().multiplyScalar(h11 * arrChord));
-
-    // Apply Z sine-bulge for figure-8 crossing
-    pt.z -= OFFSET * Math.sin(Math.PI * t);
-
-    points.push(pt);
+    pts.push(new THREE.Vector3(x, y, z));
   }
 
-  // ── Flyby: semicircle around Moon far side, 60 points ──
-  // More points = smoother arc at junctions
-  // Flyby goes from +Z (+π/2) around far side to -Z (-π/2)
-  const flybyN = 60;
-  for (let i = 0; i < flybyN; i++) {
-    const angle = (Math.PI / 2) - (i / (flybyN - 1)) * Math.PI;
-    points.push(new THREE.Vector3(
-      MOON_DISTANCE + LOOP_R * Math.cos(angle),
-      -0.05,
-      LOOP_R * Math.sin(angle),
-    ));
+  // ================================================================
+  //  SEGMENT 3: Hyperbolic flyby around Moon far side
+  //
+  //  Moon at (MOON_DISTANCE, 0, 0).
+  //  Approach from Earth side → periapsis on far side → depart.
+  //
+  //  In Moon-centered coordinates:
+  //    periapsis (+X from Moon = far side)
+  //    theta > 0: trajectory above → approach from +Y
+  //    theta < 0: trajectory below → depart toward -Y
+  //
+  //  This connects: outbound coming from +Y, depart going to -Y ✓
+  // ================================================================
+
+  const flyRange = thetaMaxHyp * 0.88;
+
+  for (let i = 0; i <= 100; i++) {
+    const f = i / 100;
+    const theta = flyRange * (1 - 2 * f); // +flyRange → -flyRange
+    const r = hyperR(aHyp, eHyp, theta);
+
+    const xM = r * Math.cos(theta);
+    const yM = r * Math.sin(theta);
+
+    const x = MOON_DISTANCE + xM;
+    const y = yM;
+    const z = pts[pts.length - 1].z * (1 - f); // fade Z to 0
+
+    pts.push(new THREE.Vector3(x, y, z));
   }
 
-  // ── Return: Hermite from flyby exit → Earth ──
-  // Departure tangent = -X (circle tangent at θ=-π/2)
-  // Arrival tangent = -X (approaching Earth from +X side)
-  const flybyExit = new THREE.Vector3(
-    MOON_DISTANCE + LOOP_R * Math.cos(-Math.PI / 2),
-    -0.05,
-    LOOP_R * Math.sin(-Math.PI / 2),   // -Z side (left)
-  );
-  const earthEnd = new THREE.Vector3(0, -0.3, 0);
-  const departureTangent = new THREE.Vector3(-1, 0, 0); // -X, matching circle tangent at exit
-  const earthArrivalTangent = new THREE.Vector3(-1, 0, 0); // arriving at Earth from +X
-  const retChord = flybyExit.distanceTo(earthEnd) * 0.8;
+  // ================================================================
+  //  SEGMENT 4: Free-return — Moon SOI back to Earth
+  //
+  //  Mirror of the outbound: the return path sweeps through -Y
+  //  (lower lobe of figure-8).
+  //
+  //  Return ellipse oriented with:
+  //    omega = -PI → position angle = theta - PI
+  //    theta=PI → angle=0 → (+r, 0) [apogee near Moon, +X] ✓
+  //    theta=0 → angle=-PI → (-r, 0) [perigee, -X side]
+  //
+  //  For -Y sweep:
+  //    angle = -(PI - theta) = theta - PI
+  //    theta=PI → angle=0 → (+r, 0) [near Moon] ✓
+  //    theta=PI/2 → angle=-PI/2 → (0, -r) [-Y lobe] ✓
+  //    theta=0 → angle=-PI → (-r, 0) [perigee]
+  //
+  //  But we want perigee near Earth on the +X side for splashdown,
+  //  not -X. Let's adjust:
+  //    angle = -(PI - theta) + PI = theta → standard orientation
+  //    No, that gives +Y again.
+  //
+  //  Correct approach for -Y:
+  //    angle = theta - PI
+  //    We sweep theta from PI (apogee at +X) down to ~0 (perigee at -X)
+  //    Midway at theta=PI/2: angle=-PI/2 → (0, -r) ✓ -Y lobe!
+  //
+  //  The perigee ends up at -X, which is fine — we add a final
+  //  splashdown segment to bring it to Earth surface.
+  // ================================================================
 
-  const retN = 60;
-  for (let i = 1; i <= retN; i++) {
-    const t = i / retN;
+  // Find the true anomaly where r = distance of flyby exit from Earth
+  const fExit = pts[pts.length - 1];
+  const rExit = Math.sqrt(fExit.x * fExit.x + fExit.y * fExit.y + fExit.z * fExit.z);
+  const cosStartTA = ((a_ret * (1 - e_ret * e_ret)) / rExit - 1) / e_ret;
+  const startTA = Math.acos(Math.max(-1, Math.min(1, cosStartTA)));
 
-    // Cubic Hermite
-    const h00 = 2*t*t*t - 3*t*t + 1;
-    const h10 = t*t*t - 2*t*t + t;
-    const h01 = -2*t*t*t + 3*t*t;
-    const h11 = t*t*t - t*t;
+  // Sweep from near-apogee (startTA ≈ pi) to near-perigee (small theta)
+  const endTA = 0.05; // not quite 0, stop just before perigee
+  for (let i = 1; i <= 150; i++) {
+    const f = i / 150;
+    const theta = startTA + f * (endTA - startTA); // decreasing
+    const r = ellipseR(a_ret, e_ret, theta);
 
-    const pt = flybyExit.clone().multiplyScalar(h00)
-      .add(departureTangent.clone().multiplyScalar(h10 * retChord))
-      .add(earthEnd.clone().multiplyScalar(h01))
-      .add(earthArrivalTangent.clone().multiplyScalar(h11 * retChord));
+    const angle = theta - Math.PI; // sweeps through -Y
+    const x = r * Math.cos(angle);
+    const y = r * Math.sin(angle);
+    const z = fExit.z * (1 - f) * 0.2;
 
-    // Apply Z sine-bulge for figure-8 crossing (opposite of outbound)
-    pt.z += OFFSET * Math.sin(Math.PI * t);
-
-    points.push(pt);
+    pts.push(new THREE.Vector3(x, y, z));
   }
 
-  // ── Splashdown ──
-  points.push(new THREE.Vector3(-0.2, -EARTH_RADIUS, -0.3));
+  // ================================================================
+  //  SEGMENT 5: Final splashdown
+  // ================================================================
+  pts.push(new THREE.Vector3(-0.3, -EARTH_RADIUS * 0.95, -0.2));
 
-  // Use centripetal parameterization for smoothest join
-  return new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.5);
+  return new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Progress mapping — uniform speed along the path                    */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/*  Progress mapping                                                   */
+/* ================================================================== */
 
-/**
- * Simple arc-length based progress mapping.
- * progress 0→1 maps linearly to curve arc-length 0→1.
- * No per-segment speed adjustments — the spacecraft moves at
- * constant visual speed along the entire path.
- * This eliminates the jarring speed changes between segments.
- */
 export function buildProgressMapping(
-  curve: THREE.CatmullRomCurve3,
+  _curve: THREE.CatmullRomCurve3,
 ): (progress: number) => number {
-  // CatmullRomCurve3.getPointAt() already uses arc-length parameterization.
-  // So we just return the identity function — progress = arc-length fraction.
-  return function mapProgressToCurveT(progress: number): number {
-    return Math.min(Math.max(progress, 0), 1);
-  };
+  return (p: number) => Math.min(Math.max(p, 0), 1);
 }
 
-/**
- * Total mission duration in simulation seconds.
- * Real Artemis II: ~10 days (April 1–11, 2026).
- */
-export const MISSION_DURATION = 60; // seconds at 1× speed
-
-/** Moon orbital period in simulation seconds (≈ 27.3 days scaled) */
+export const MISSION_DURATION = 60;
 export const MOON_ORBIT_PERIOD = 160;
 
-/**
- * Real mission crew for display.
- */
 export const CREW = [
   { name: 'Reid Wiseman', role: 'Commander', agency: 'NASA' },
   { name: 'Victor Glover', role: 'Pilot', agency: 'NASA' },
@@ -256,5 +276,4 @@ export const CREW = [
   { name: 'Jeremy Hansen', role: 'Mission Specialist 2', agency: 'CSA' },
 ];
 
-/** Mission launch date */
 export const LAUNCH_DATE = new Date('2026-04-01T22:35:12Z');

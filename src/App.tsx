@@ -134,11 +134,11 @@ function MoonOrbit() {
 function Sun() {
   return (
     <group>
-      <directionalLight position={[80, 30, 50]} intensity={2} color="#fff5e0" />
+      <directionalLight position={[200, 60, 120]} intensity={2} color="#fff5e0" />
       <ambientLight intensity={0.12} />
       {/* Visual sun sphere far away */}
-      <mesh position={[80, 30, 50]}>
-        <sphereGeometry args={[3, 16, 16]} />
+      <mesh position={[200, 60, 120]}>
+        <sphereGeometry args={[5, 16, 16]} />
         <meshBasicMaterial color="#ffee88" />
       </mesh>
     </group>
@@ -150,7 +150,7 @@ function Sun() {
 /* ================================================================== */
 
 function StarField() {
-  return <Stars radius={300} depth={100} count={8000} factor={4} saturation={0} fade speed={0.5} />;
+  return <Stars radius={600} depth={200} count={8000} factor={4} saturation={0} fade speed={0.5} />;
 }
 
 /* ================================================================== */
@@ -160,9 +160,9 @@ function StarField() {
 function DistantBodies() {
   const bodies = useMemo(
     () => [
-      { pos: [120, 20, -80] as [number, number, number], r: 1.5, color: '#cc6633', name: 'Mars' },
-      { pos: [-100, -10, 100] as [number, number, number], r: 5, color: '#ddaa55', name: 'Jupiter' },
-      { pos: [150, 40, 180] as [number, number, number], r: 4, color: '#ddc87a', name: 'Saturn' },
+      { pos: [250, 40, -160] as [number, number, number], r: 2, color: '#cc6633', name: 'Mars' },
+      { pos: [-200, -20, 200] as [number, number, number], r: 6, color: '#ddaa55', name: 'Jupiter' },
+      { pos: [300, 80, 350] as [number, number, number], r: 5, color: '#ddc87a', name: 'Saturn' },
     ],
     [],
   );
@@ -388,7 +388,7 @@ function CameraController({
       enableZoom
       enableRotate
       minDistance={0.5}
-      maxDistance={300}
+      maxDistance={500}
       zoomSpeed={1.2}
     />
   );
@@ -481,15 +481,14 @@ const btnStyle: React.CSSProperties = {
 
 function phaseName(t: number): string {
   if (t < MISSION_TIMELINE.leo)       return '🚀 Launch — LC-39B, Kennedy Space Center';
-  if (t < MISSION_TIMELINE.heo)       return '🌍 Low Earth Orbit (1 orbit)';
-  if (t < MISSION_TIMELINE.tli)       return '🌍 High Earth Orbit (44,000 mi apogee)';
-  if (t < MISSION_TIMELINE.coast1)    return '🔥 Trans-Lunar Injection';
+  if (t < MISSION_TIMELINE.tli)       return '🌍 Low Earth Orbit — 185 km parking orbit';
+  if (t < MISSION_TIMELINE.coast1)    return '🔥 Trans-Lunar Injection burn';
   if (t < MISSION_TIMELINE.approach)  return '🌌 Translunar Coast (outbound leg)';
   if (t < MISSION_TIMELINE.flyby)     return '🌙 Entering Moon\'s Sphere of Influence';
-  if (t < MISSION_TIMELINE.depart)    return '🌑 Far Side Flyby — 4,067 mi from surface';
+  if (t < MISSION_TIMELINE.depart)    return '🌑 Far Side Flyby — 6,545 km from surface';
   if (t < MISSION_TIMELINE.return1)   return '🌙 Departing Moon';
   if (t < MISSION_TIMELINE.reentry)   return '🌌 Free-Return Coast (return leg)';
-  if (t < MISSION_TIMELINE.splashdown) return '🔥 Re-entry — 25,000 mph';
+  if (t < MISSION_TIMELINE.splashdown) return '🔥 Re-entry — 40,000 km/h';
   return '🏁 Splashdown — Pacific Ocean';
 }
 
@@ -543,7 +542,7 @@ export default function App() {
         <div style={{ fontSize: 16, color: '#ff8844', marginBottom: 4 }}>
           ARTEMIS II — Orion "Integrity"
         </div>
-        <div>Crewed Lunar Free-Return · SLS Block 1</div>
+        <div>Crewed Lunar Free-Return · SLS Block 1 · Real Physics</div>
         <div style={{ marginTop: 6 }}>
           Mission Day: <span style={{ color: '#fff' }}>{missionDay}</span> / 10
         </div>
@@ -599,7 +598,7 @@ export default function App() {
 
       {/* 3D Canvas */}
       <Canvas
-        camera={{ position: [5, 8, 15], fov: 55, near: 0.1, far: 1000 }}
+        camera={{ position: [10, 15, 30], fov: 55, near: 0.1, far: 1500 }}
         gl={{ antialias: true, alpha: false }}
         style={{ width: '100%', height: '100%' }}
       >
