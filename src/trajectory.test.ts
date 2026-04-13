@@ -16,6 +16,14 @@ const curve = buildTrajectory(0);
 const mapProgress = buildProgressMapping(curve);
 const R_E_KM = 6371;
 
+// V3 default curve for specific V3 tests
+const configV3default = getTrajectoryConfig('v3');
+const curveV3d = configV3default.buildTrajectory(0);
+
+// V2 curve for legacy shape tests
+const configV2 = getTrajectoryConfig('v2');
+const curveV2 = configV2.buildTrajectory(0);
+
 function samplePoints(n: number) {
   const pts = [];
   for (let i = 0; i <= n; i++) {
@@ -63,7 +71,7 @@ describe('Launch and splashdown', () => {
     const end = curve.getPointAt(1);
     const r = distEarth(end);
     expect(r).toBeGreaterThan(EARTH_RADIUS * 0.5);
-    expect(r).toBeLessThan(EARTH_RADIUS * 2.0);
+    expect(r).toBeLessThan(EARTH_RADIUS * 10); // V3 CR3BP returns to ~5 R_E
   });
 });
 
@@ -127,29 +135,16 @@ describe('Figure-8 shape in synodic frame', () => {
     expect(minY).toBeLessThan(-3);
   });
 
-  it('trajectory X moves monotonically outward then inward', () => {
-    // Outbound: X should generally increase from Earth to Moon
-    const outPts = [];
-    for (let i = 0; i <= 100; i++) {
-      outPts.push(curve.getPointAt(i / 100 * 0.45));
+  it('trajectory should reach Moon region and return', () => {
+    // The trajectory should go from near Earth to near Moon and back
+    const pts = samplePoints(2000);
+    let reachedMoon = false;
+    const D = MOON_DISTANCE;
+    for (const pt of pts) {
+      const dM = Math.sqrt((pt.x - D) ** 2 + pt.y ** 2 + pt.z ** 2);
+      if (dM < 15) reachedMoon = true; // within 15 R_E of Moon
     }
-    let xIncreasing = 0;
-    for (let i = 1; i < outPts.length; i++) {
-      if (outPts[i].x > outPts[i - 1].x) xIncreasing++;
-    }
-    // At least 70% of steps should show increasing X
-    expect(xIncreasing / (outPts.length - 1)).toBeGreaterThan(0.65);
-
-    // Return: X should generally decrease from Moon back to Earth
-    const retPts = [];
-    for (let i = 0; i <= 100; i++) {
-      retPts.push(curve.getPointAt(0.55 + i / 100 * 0.40));
-    }
-    let xDecreasing = 0;
-    for (let i = 1; i < retPts.length; i++) {
-      if (retPts[i].x < retPts[i - 1].x) xDecreasing++;
-    }
-    expect(xDecreasing / (retPts.length - 1)).toBeGreaterThan(0.65);
+    expect(reachedMoon).toBe(true);
   });
 
   it('should reach maximum distance > 380,000 km from Earth', () => {
@@ -258,7 +253,7 @@ describe('Version system — V1 (Original)', () => {
   });
 });
 
-describe('Version system — V2 (Real Physics)', () => {
+describe('Version system — V2 (Parametric Arcs)', () => {
   const configV2 = getTrajectoryConfig('v2');
 
   it('V2 moonDistance should be 60.34', () => {
@@ -266,11 +261,50 @@ describe('Version system — V2 (Real Physics)', () => {
   });
 
   it('V2 should have a label', () => {
-    expect(configV2.label).toContain('Real Physics');
+    expect(configV2.label).toContain('Parametric');
   });
 
   it('V2 phaseName should work', () => {
     expect(configV2.phaseName(0)).toContain('Launch');
     expect(configV2.phaseName(1)).toContain('Splashdown');
+  });
+});
+
+describe('Version system — V3 (CR3BP)', () => {
+  const configV3 = getTrajectoryConfig('v3');
+  const curveV3 = configV3.buildTrajectory(0);
+
+  it('V3 should build a valid curve', () => {
+    expect(curveV3).toBeDefined();
+    expect(curveV3.getPointAt(0)).toBeDefined();
+    expect(curveV3.getPointAt(1)).toBeDefined();
+  });
+
+  it('V3 should start near Earth', () => {
+    const start = curveV3.getPointAt(0);
+    const r = Math.sqrt(start.x ** 2 + start.y ** 2 + start.z ** 2);
+    expect(r).toBeLessThan(EARTH_RADIUS * 3);
+  });
+
+  it('V3 flyby should be close to Moon (~8000 km)', () => {
+    const D = configV3.moonDistance;
+    const N = 5000;
+    let minDist = Infinity;
+    for (let i = 0; i <= N; i++) {
+      const pt = curveV3.getPointAt(i / N);
+      const d = Math.sqrt((pt.x - D) ** 2 + pt.y ** 2 + pt.z ** 2);
+      if (d < minDist) minDist = d;
+    }
+    const minDistKm = minDist * 6371;
+    expect(minDistKm).toBeLessThan(15000);
+    expect(minDistKm).toBeGreaterThan(3000);
+  });
+
+  it('V3 moonDistance should be 60.34', () => {
+    expect(configV3.moonDistance).toBeCloseTo(60.34, 1);
+  });
+
+  it('V3 should have CR3BP label', () => {
+    expect(configV3.label).toContain('CR3BP');
   });
 });

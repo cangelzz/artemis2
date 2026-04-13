@@ -362,7 +362,7 @@ export default function App() {
   const [speed, setSpeed] = useState(1);
   const [progress, setProgress] = useState(0);
   const [focusTarget, setFocusTarget] = useState<FocusTarget>('earth');
-  const [version, setVersion] = useState<TrajectoryVersion>('v2');
+  const [version, setVersion] = useState<TrajectoryVersion>('v3');
 
   const config = useMemo(() => getTrajectoryConfig(version), [version]);
 
@@ -442,7 +442,8 @@ export default function App() {
         <div style={{ color: '#888', marginTop: 10, marginBottom: 2 }}>Trajectory:</div>
         {([
           { key: 'v1' as TrajectoryVersion, label: 'V1 Original', color: '#ffaa44' },
-          { key: 'v2' as TrajectoryVersion, label: 'V2 Real Physics', color: '#44ff88' },
+          { key: 'v2' as TrajectoryVersion, label: 'V2 Parametric', color: '#44aaff' },
+          { key: 'v3' as TrajectoryVersion, label: 'V3 CR3BP', color: '#44ff88' },
         ]).map(({ key, label, color }) => (
           <button
             key={key}
