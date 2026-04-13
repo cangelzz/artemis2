@@ -1,60 +1,43 @@
 /**
- * Artemis II trajectory — physically-based free-return figure-8 orbit.
+ * Artemis II trajectory — figure-8 free-return orbit.
  *
- * KEY INSIGHT: The figure-8 shape in the synodic (co-rotating) frame:
+ * The trajectory is built as a single smooth path in the synodic
+ * (co-rotating) frame where Earth is at origin and Moon is fixed
+ * on the +X axis.
  *
- *   The outbound path goes from Earth toward Moon, curving ABOVE (+Y)
- *   the Earth-Moon line. After the far-side flyby, the return path
- *   goes from Moon back toward Earth, curving BELOW (-Y) the line.
+ * APPROACH: Instead of patching different orbit types together
+ * (which causes discontinuities at junctions), we define the
+ * figure-8 as a smooth parametric curve with control points
+ * derived from real mission data.
  *
- *   The two paths CROSS somewhere between Earth and Moon, forming
- *   the characteristic figure-8. This crossing happens because:
- *   - Both outbound and return legs travel in the SAME X-direction
- *     pattern (Earth→Moon→Earth)
- *   - But on OPPOSITE sides of the Earth-Moon line (Y)
- *   - The Moon's gravity deflects the trajectory from +Y to -Y
+ * The figure-8 shape:
+ *   - Outbound: Earth → Moon, arcing through +Y (above)
+ *   - Flyby: smooth hairpin around Moon's far side
+ *   - Return: Moon → Earth, arcing through -Y (below)
+ *   - The two legs cross midway between Earth and Moon
  *
- *         +Y
- *          |    outbound (above)
- *    Earth o-------X-------o Moon
- *          |    return (below)
- *         -Y
- *
- *   Where X marks the crossover point.
- *
- * REAL NASA DATA:
- *   - LEO parking orbit: 185 km altitude, 28.5 deg inclination
- *   - Lunar flyby: 8,282 km from Moon center (6,545 km from surface)
- *   - Far-side flyby (x > Moon distance at closest approach)
- *   - Free-return trajectory, no burns needed after TLI
- *   - Mission duration: ~10 days
+ * Physical parameters matched:
+ *   - LEO: 185 km altitude
+ *   - Flyby: 8,282 km from Moon center (6,545 km surface)
+ *   - Far-side flyby (periapsis at x > MOON_DISTANCE)
+ *   - Max distance from Earth: ~400,000 km
+ *   - Lobe height: ~15-20 R_E (matches NASA diagrams)
  *
  * SCALE: 1 unit = 1 Earth radius = 6,371 km
  */
 
 import * as THREE from 'three';
 
-/* ================================================================== */
-/*  Physical constants                                                 */
-/* ================================================================== */
-
 export const EARTH_RADIUS = 1;
-export const MOON_RADIUS = 0.2727;  // 1,737.4 / 6,371
-export const MOON_DISTANCE = 60.34; // 384,400 / 6,371
+export const MOON_RADIUS = 0.2727;
+export const MOON_DISTANCE = 60.34;
 
-const MU_EARTH = 398600.4418; // km^3/s^2
-const MU_MOON = 4902.8;       // km^3/s^2
 const R_E_KM = 6371;
-
-const LEO_R = (R_E_KM + 185) / R_E_KM; // 1.029
-const FLYBY_PERI = 8282 / R_E_KM;       // 1.30 (from Moon center)
+const LEO_R = (R_E_KM + 185) / R_E_KM;
+const FLYBY_PERI = 8282 / R_E_KM; // 1.30 R_E from Moon center
 const INCL = (28.5 * Math.PI) / 180;
 
 export const SUN_DIR = new THREE.Vector3(1, 0.3, 0.5).normalize();
-
-/* ================================================================== */
-/*  Mission timeline                                                   */
-/* ================================================================== */
 
 export const MISSION_TIMELINE = {
   launch:     0.0,
@@ -71,40 +54,12 @@ export const MISSION_TIMELINE = {
   splashdown: 1.0,
 };
 
-/* ================================================================== */
-/*  Orbit helpers                                                      */
-/* ================================================================== */
-
-function ellipseR(a: number, e: number, theta: number): number {
-  return (a * (1 - e * e)) / (1 + e * Math.cos(theta));
-}
-
-function hyperR(a: number, e: number, theta: number): number {
-  return (a * (e * e - 1)) / (1 + e * Math.cos(theta));
-}
-
-/* ================================================================== */
-/*  Trajectory builder                                                 */
-/* ================================================================== */
-
 export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   const pts: THREE.Vector3[] = [];
 
-  // ── Compute orbital parameters ──
-
-  // TLI ellipse
-  const pKm = LEO_R * R_E_KM;
-  const aKm_tli = 384400;
-  const a_tli = (pKm + aKm_tli) / 2 / R_E_KM;
-  const e_tli = (aKm_tli - pKm) / (aKm_tli + pKm);
-
-  // Flyby hyperbola
-  const vSC = Math.sqrt(MU_EARTH * (2 / aKm_tli - 1 / (a_tli * R_E_KM)));
-  const vMoon = Math.sqrt(MU_EARTH / aKm_tli);
-  const vInf = Math.abs(vSC - vMoon);
-  const aHyp = MU_MOON / (vInf * vInf) / R_E_KM;
-  const eHyp = FLYBY_PERI / aHyp + 1;
-  const thetaMaxHyp = Math.acos(-1 / eHyp);
+  const D = MOON_DISTANCE;
+  // Lobe height: ~17 R_E ≈ 108,000 km, consistent with NASA diagrams
+  const H = D * 0.28;
 
   // ================================================================
   //  SEGMENT 1: LEO parking orbit — 1.5 revolutions
@@ -117,126 +72,104 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
   }
 
   // ================================================================
-  //  SEGMENT 2: Outbound — Earth to Moon, curving through +Y
+  //  SEGMENT 2: Outbound — Earth to Moon flyby entry
   //
-  //  This is a transfer orbit. In the synodic frame, the Coriolis
-  //  effect bends the outbound trajectory ABOVE the Earth-Moon line.
+  //  Smooth arc from Earth through +Y to the Moon's near side.
+  //  The path approaches the Moon from slightly above (+Y),
+  //  which feeds smoothly into the flyby hairpin.
   //
-  //  We use a parameterized path: X goes from 0 to MOON_DISTANCE,
-  //  Y follows a sine-like lobe above the X-axis, with the amplitude
-  //  determined by the TLI orbit's semi-latus rectum.
-  //
-  //  The lobe height comes from real orbital mechanics:
-  //  In the synodic frame, the maximum transverse displacement
-  //  for a Hohmann-like transfer is roughly:
-  //    y_max ≈ a * sqrt(1 - e^2) * sin(theta_peak)
-  //  For our TLI orbit, this gives about 15-20 R_E.
-  //
-  //  Apollo 13 reference imagery confirms the lobes span about
-  //  1/3 to 1/4 of the Earth-Moon distance in the Y direction.
+  //  The arc is defined parametrically so that:
+  //    - x goes from 0 to D (Earth to Moon)
+  //    - y traces a single lobe peaking around x = D*0.35
+  //    - At x = D, y should be small and positive (approaching Moon
+  //      from above to match the flyby entry direction)
   // ================================================================
 
-  // The lobe height: TLI semi-latus rectum gives natural scale
-  const semiLatus = a_tli * (1 - e_tli * e_tli);
-  // In the synodic frame, max Y displacement is roughly
-  // the semi-latus rectum projected transversely.
-  // For Apollo/Artemis free-return, this is about 15-20 R_E.
-  const lobeHeight = MOON_DISTANCE * 0.28; // ~17 R_E, matches NASA diagrams
-
   const N_OUT = 200;
-  for (let i = 0; i <= N_OUT; i++) {
+  for (let i = 1; i <= N_OUT; i++) {
     const f = i / N_OUT;
 
-    // X: smoothly from Earth to Moon
-    // Use a slight ease to spend more time near Earth (acceleration phase)
-    const xFrac = f; // linear in arc
-    const x = xFrac * MOON_DISTANCE;
+    // X: Earth to Moon, with slight ease-in
+    const x = f * f * (3 - 2 * f) * D; // smoothstep
 
-    // Y: lobe above Earth-Moon line
-    // Shape: sin curve that peaks around 30-40% of the way to Moon
-    // (the outbound leg bows out more toward Earth's side)
-    const yPhase = Math.sin(Math.PI * f);
-    // Asymmetric: peak closer to Earth side (f ~0.35)
-    const asymmetry = Math.exp(-2 * (f - 0.35) * (f - 0.35));
-    const yEnvelope = 0.7 * yPhase + 0.3 * asymmetry;
-    const y = lobeHeight * yEnvelope;
+    // Y: asymmetric lobe, peaks around 35% of the way
+    // At f=0: y=0 (Earth), at f=1: y approaches FLYBY_PERI (Moon entry)
+    const yBase = Math.sin(Math.PI * f);
+    // Taper toward Moon but keep a residual to match flyby entry
+    const taper = 1 - f * f * f * 0.7;
+    const yLobe = H * yBase * taper;
+    // Blend toward FLYBY_PERI at the end for smooth flyby connection
+    const flybyBlend = Math.pow(f, 8); // only kicks in near f=1
+    const y = yLobe * (1 - flybyBlend) + FLYBY_PERI * flybyBlend;
 
-    // Z: small inclination effect, fading
-    const z = y * Math.sin(INCL) * (1 - f) * 0.15;
+    // Z: small inclination, fading
+    const z = y * Math.sin(INCL) * (1 - f) * 0.12;
 
     pts.push(new THREE.Vector3(x, y, z));
   }
 
   // ================================================================
-  //  SEGMENT 3: Hyperbolic flyby around Moon's far side
+  //  SEGMENT 3: Lunar flyby — smooth hairpin around far side
   //
-  //  The spacecraft enters from the +Y side (above Earth-Moon line),
-  //  swings around the far side of the Moon, and exits on the -Y
-  //  side (below Earth-Moon line).
-  //
-  //  This is the KEY part that creates the figure-8 crossover:
-  //  the flyby REVERSES the Y-direction of the trajectory.
-  //
-  //  In Moon-centered coordinates, the hyperbola periapsis is at +X
-  //  (far side). We rotate it so:
-  //    - Entry is from +Y side (matching outbound approach)
-  //    - Exit is toward -Y side (starting the return below)
+  //  A constant-radius semicircle at FLYBY_PERI from Moon center.
+  //  Entry from +Y, periapsis on +X (far side), exit to -Y.
+  //  We extend the angular range beyond ±pi/2 to include
+  //  approach/departure arcs, which helps CatmullRom blend smoothly.
   // ================================================================
 
   const N_FLY = 100;
-  const flyRange = thetaMaxHyp * 0.88;
-
-  // Rotation angle for the flyby hyperbola in the XY plane.
-  // We rotate the hyperbola so its approach asymptote comes from +Y
-  // and departure goes to -Y.
-  // Standard: theta>0 = +Y approach, theta<0 = -Y departure
-  // with periapsis on +X (far side). This already works!
+  const flybyZ0 = pts[pts.length - 1].z;
+  // Extend angular range: from ~2pi/3 to -2pi/3 (wider than pi/2)
+  // This adds approach/departure arcs at larger radius
+  const flybyAngleExtent = Math.PI * 0.75; // 135 degrees each side
 
   for (let i = 0; i <= N_FLY; i++) {
     const f = i / N_FLY;
-    const theta = flyRange * (1 - 2 * f); // from +flyRange to -flyRange
-    const r = hyperR(aHyp, eHyp, theta);
 
-    // Moon-centered: periapsis on +X (far side from Earth)
-    const xM = r * Math.cos(theta);
-    const yM = r * Math.sin(theta);
+    // Angle: from +flybyAngleExtent to -flybyAngleExtent
+    const angle = flybyAngleExtent * (1 - 2 * f);
 
-    // Transform to synodic frame
-    const x = MOON_DISTANCE + xM;
+    // Radius: at periapsis (angle=0) use FLYBY_PERI,
+    // at entry/exit use a larger radius that tapers in
+    const angleFrac = Math.abs(angle) / flybyAngleExtent; // 0 at periapsis, 1 at extremes
+    const flybyR = FLYBY_PERI + angleFrac * angleFrac * 2.5;
+
+    const xM = flybyR * Math.cos(angle);
+    const yM = flybyR * Math.sin(angle);
+
+    const x = D + xM;
     const y = yM;
-    const z = pts[pts.length - 1].z * (1 - f);
+    const z = flybyZ0 * (1 - f);
 
     pts.push(new THREE.Vector3(x, y, z));
   }
 
   // ================================================================
-  //  SEGMENT 4: Return — Moon back to Earth, curving through -Y
+  //  SEGMENT 4: Return — Moon to Earth, arcing through -Y
   //
-  //  Mirror of the outbound: X goes from MOON_DISTANCE back to 0,
-  //  Y follows a sine lobe BELOW the X-axis.
-  //
-  //  This is what creates the figure-8: the return leg runs
-  //  BELOW the Earth-Moon line while the outbound ran ABOVE,
-  //  and they CROSS somewhere in the middle.
+  //  Mirror of outbound but below the Earth-Moon line.
+  //  The path departs Moon from -Y and sweeps back to Earth.
+  //  The -Y lobe peaks around 65% of the way back (closer to Earth).
+  //  This creates the figure-8 crossover with the outbound +Y lobe.
   // ================================================================
 
   const N_RET = 200;
+
   for (let i = 1; i <= N_RET; i++) {
     const f = i / N_RET;
 
-    // X: from Moon back to Earth
-    const x = MOON_DISTANCE * (1 - f);
+    // X: Moon to Earth
+    const x = D * (1 - f * f * (3 - 2 * f));
 
-    // Y: lobe BELOW Earth-Moon line (negative)
-    // Mirror of outbound but the peak is closer to Earth
-    // (the return leg bows out more toward Moon's side)
-    const yPhase = -Math.sin(Math.PI * f);
-    const asymmetry = -Math.exp(-2 * (f - 0.65) * (f - 0.65));
-    const yEnvelope = 0.7 * yPhase + 0.3 * asymmetry;
-    const y = lobeHeight * yEnvelope;
+    // Y: lobe below Earth-Moon line
+    const yBase = -Math.sin(Math.PI * f);
+    const taper = 1 - (1 - f) * (1 - f) * (1 - f) * 0.7;
+    const yLobe = H * yBase * taper;
+    // Blend from -FLYBY_PERI at start for smooth flyby exit
+    const flybyBlend = Math.pow(1 - f, 8);
+    const y = yLobe * (1 - flybyBlend) + (-FLYBY_PERI) * flybyBlend;
 
-    // Z: very small residual
-    const z = y * Math.sin(INCL) * f * 0.1;
+    const z = y * Math.sin(INCL) * f * 0.08;
 
     pts.push(new THREE.Vector3(x, y, z));
   }
@@ -248,10 +181,6 @@ export function buildTrajectory(_moonAngle: number): THREE.CatmullRomCurve3 {
 
   return new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
 }
-
-/* ================================================================== */
-/*  Progress mapping                                                   */
-/* ================================================================== */
 
 export function buildProgressMapping(
   _curve: THREE.CatmullRomCurve3,
