@@ -9,6 +9,7 @@ import {
   EARTH_RADIUS,
   MOON_RADIUS,
   MOON_DISTANCE,
+  getTrajectoryConfig,
 } from './trajectory';
 
 const curve = buildTrajectory(0);
@@ -214,5 +215,62 @@ describe('Physical constants', () => {
 
   it('Earth-Moon distance ≈ 60.34 R_E', () => {
     expect(MOON_DISTANCE / EARTH_RADIUS).toBeCloseTo(60.34, 1);
+  });
+});
+
+/* ================================================================== */
+/*  Version system tests                                               */
+/* ================================================================== */
+
+describe('Version system — V1 (Original)', () => {
+  const configV1 = getTrajectoryConfig('v1');
+  const curveV1 = configV1.buildTrajectory(0);
+
+  it('should build a valid V1 curve', () => {
+    expect(curveV1).toBeDefined();
+    expect(curveV1.getPointAt(0)).toBeDefined();
+    expect(curveV1.getPointAt(1)).toBeDefined();
+  });
+
+  it('V1 should start near Earth', () => {
+    const start = curveV1.getPointAt(0);
+    const r = Math.sqrt(start.x ** 2 + start.y ** 2 + start.z ** 2);
+    expect(r).toBeLessThan(EARTH_RADIUS * 2);
+  });
+
+  it('V1 should end near Earth', () => {
+    const end = curveV1.getPointAt(1);
+    const r = Math.sqrt(end.x ** 2 + end.y ** 2 + end.z ** 2);
+    expect(r).toBeLessThan(EARTH_RADIUS * 3);
+  });
+
+  it('V1 moonDistance should be 40', () => {
+    expect(configV1.moonDistance).toBe(40);
+  });
+
+  it('V1 should have a label', () => {
+    expect(configV1.label).toContain('Original');
+  });
+
+  it('V1 phaseName should work', () => {
+    expect(configV1.phaseName(0)).toContain('Launch');
+    expect(configV1.phaseName(1)).toContain('Splashdown');
+  });
+});
+
+describe('Version system — V2 (Real Physics)', () => {
+  const configV2 = getTrajectoryConfig('v2');
+
+  it('V2 moonDistance should be 60.34', () => {
+    expect(configV2.moonDistance).toBeCloseTo(60.34, 1);
+  });
+
+  it('V2 should have a label', () => {
+    expect(configV2.label).toContain('Real Physics');
+  });
+
+  it('V2 phaseName should work', () => {
+    expect(configV2.phaseName(0)).toContain('Launch');
+    expect(configV2.phaseName(1)).toContain('Splashdown');
   });
 });

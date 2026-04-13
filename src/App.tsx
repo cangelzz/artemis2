@@ -1,29 +1,23 @@
-import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { useState, useRef, useMemo, useCallback } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars, Html, Line } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import {
   EARTH_RADIUS,
-  MOON_RADIUS,
-  MOON_DISTANCE,
-  MOON_ORBIT_PERIOD,
   MISSION_DURATION,
-  MISSION_TIMELINE,
   CREW,
   LAUNCH_DATE,
-  buildTrajectory,
-  buildProgressMapping,
+  getTrajectoryConfig,
+  type TrajectoryVersion,
+  type TrajectoryConfig,
 } from './trajectory';
 
 /* ================================================================== */
 /*  Constants                                                          */
 /* ================================================================== */
 
-/** Earth's axial tilt: 23.44° in radians */
 const EARTH_TILT = (23.44 * Math.PI) / 180;
-
-/** Camera focus targets */
 type FocusTarget = 'earth' | 'moon' | 'ship';
 
 /* ================================================================== */
@@ -31,104 +25,77 @@ type FocusTarget = 'earth' | 'moon' | 'ship';
 /* ================================================================== */
 
 function Earth({ progress }: { progress: number }) {
-  const ref = useRef<THREE.Group>(null!);
   const meshRef = useRef<THREE.Mesh>(null!);
-
-  // Earth rotates once per day; 10-day mission = 10 full rotations
-  // progress 0→1 = 10 days, so rotation = progress × 10 × 2π
   useFrame(() => {
     meshRef.current.rotation.y = progress * 10 * Math.PI * 2;
   });
 
   return (
-    <group ref={ref} position={[0, 0, 0]} rotation={[0, 0, EARTH_TILT]}>
+    <group position={[0, 0, 0]} rotation={[0, 0, EARTH_TILT]}>
       <mesh ref={meshRef}>
         <sphereGeometry args={[EARTH_RADIUS, 64, 64]} />
         <meshStandardMaterial color="#2264aa" roughness={0.8} />
-        {/* Atmosphere glow */}
         <mesh>
           <sphereGeometry args={[EARTH_RADIUS * 1.02, 64, 64]} />
-          <meshStandardMaterial
-            color="#88ccff"
-            transparent
-            opacity={0.15}
-            side={THREE.BackSide}
-          />
+          <meshStandardMaterial color="#88ccff" transparent opacity={0.15} side={THREE.BackSide} />
         </mesh>
-        {/* Continents approximation */}
         <mesh rotation={[0, 1.2, 0.2]}>
           <sphereGeometry args={[EARTH_RADIUS * 1.001, 32, 32]} />
-          <meshStandardMaterial
-            color="#33884a"
-            roughness={0.9}
-            wireframe={false}
-            transparent
-            opacity={0.45}
-          />
+          <meshStandardMaterial color="#33884a" roughness={0.9} transparent opacity={0.45} />
         </mesh>
       </mesh>
-      {/* Axis line showing tilt */}
       <Line
         points={[
           new THREE.Vector3(0, -EARTH_RADIUS * 1.5, 0),
           new THREE.Vector3(0, EARTH_RADIUS * 1.5, 0),
         ]}
-        color="#4466aa"
-        lineWidth={0.5}
-        transparent
-        opacity={0.3}
+        color="#4466aa" lineWidth={0.5} transparent opacity={0.3}
       />
       <Html position={[0, EARTH_RADIUS + 0.4, 0]} center style={{ pointerEvents: 'none' }}>
-        <div style={{ color: '#88ccff', fontSize: 12, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-          Earth
-        </div>
+        <div style={{ color: '#88ccff', fontSize: 12, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>Earth</div>
       </Html>
     </group>
   );
 }
 
 /* ================================================================== */
-/*  Moon                                                               */
+/*  Moon — dynamic position based on moonDistance                       */
 /* ================================================================== */
 
-function Moon({ angle }: { angle: number }) {
+function Moon({ angle, moonDistance, moonRadius }: { angle: number; moonDistance: number; moonRadius: number }) {
   const pos: [number, number, number] = [
-    Math.cos(angle) * MOON_DISTANCE,
-    0,
-    Math.sin(angle) * MOON_DISTANCE,
+    Math.cos(angle) * moonDistance, 0, Math.sin(angle) * moonDistance,
   ];
   return (
     <mesh position={pos}>
-      <sphereGeometry args={[MOON_RADIUS, 32, 32]} />
+      <sphereGeometry args={[moonRadius, 32, 32]} />
       <meshStandardMaterial color="#ccccbb" roughness={0.9} />
-      <Html position={[0, MOON_RADIUS + 0.25, 0]} center style={{ pointerEvents: 'none' }}>
-        <div style={{ color: '#ccccbb', fontSize: 12, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-          Moon
-        </div>
+      <Html position={[0, moonRadius + 0.25, 0]} center style={{ pointerEvents: 'none' }}>
+        <div style={{ color: '#ccccbb', fontSize: 12, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>Moon</div>
       </Html>
     </mesh>
   );
 }
 
 /* ================================================================== */
-/*  Moon's orbit ring                                                  */
+/*  Moon orbit ring                                                    */
 /* ================================================================== */
 
-function MoonOrbit() {
+function MoonOrbit({ moonDistance }: { moonDistance: number }) {
   const points = useMemo(() => {
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i <= 128; i++) {
       const a = (i / 128) * Math.PI * 2;
-      pts.push(new THREE.Vector3(Math.cos(a) * MOON_DISTANCE, 0, Math.sin(a) * MOON_DISTANCE));
+      pts.push(new THREE.Vector3(Math.cos(a) * moonDistance, 0, Math.sin(a) * moonDistance));
     }
     return pts;
-  }, []);
+  }, [moonDistance]);
 
   return <Line points={points} color="#334455" lineWidth={0.5} transparent opacity={0.4} />;
 }
 
 /* ================================================================== */
-/*  Sun (distant light source)                                         */
+/*  Sun                                                                */
 /* ================================================================== */
 
 function Sun() {
@@ -136,7 +103,6 @@ function Sun() {
     <group>
       <directionalLight position={[200, 60, 120]} intensity={2} color="#fff5e0" />
       <ambientLight intensity={0.12} />
-      {/* Visual sun sphere far away */}
       <mesh position={[200, 60, 120]}>
         <sphereGeometry args={[5, 16, 16]} />
         <meshBasicMaterial color="#ffee88" />
@@ -146,7 +112,7 @@ function Sun() {
 }
 
 /* ================================================================== */
-/*  Background stars (remote stars)                                     */
+/*  Stars                                                              */
 /* ================================================================== */
 
 function StarField() {
@@ -154,7 +120,7 @@ function StarField() {
 }
 
 /* ================================================================== */
-/*  Additional distant planets / stars for visual richness              */
+/*  Distant planets                                                    */
 /* ================================================================== */
 
 function DistantBodies() {
@@ -173,9 +139,7 @@ function DistantBodies() {
           <sphereGeometry args={[b.r, 24, 24]} />
           <meshStandardMaterial color={b.color} roughness={0.7} />
           <Html position={[0, b.r + 0.6, 0]} center style={{ pointerEvents: 'none' }}>
-            <div style={{ color: '#999', fontSize: 10, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-              {b.name}
-            </div>
+            <div style={{ color: '#999', fontSize: 10, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{b.name}</div>
           </Html>
         </mesh>
       ))}
@@ -184,21 +148,15 @@ function DistantBodies() {
 }
 
 /* ================================================================== */
-/*  Trajectory lines — color-coded like NASA diagram                   */
-/*  Green = outbound (launch → Moon)                                   */
-/*  Blue  = return   (Moon → splashdown)                               */
+/*  Trajectory line                                                    */
 /* ================================================================== */
 
-function TrajectoryLine({
-  curve,
-  mapProgress,
-}: {
+function TrajectoryLine({ curve, mapProgress }: {
   curve: THREE.CatmullRomCurve3;
   mapProgress: (p: number) => number;
 }) {
-  // Split the trajectory at flyby midpoint (progress=0.60, the far side)
   const { outbound, ret } = useMemo(() => {
-    const splitT = mapProgress(0.60); // flyby closest approach
+    const splitT = mapProgress(0.60);
     const numPts = 3000;
     const outPts: THREE.Vector3[] = [];
     const retPts: THREE.Vector3[] = [];
@@ -208,7 +166,7 @@ function TrajectoryLine({
       if (t <= splitT) {
         outPts.push(pt);
       } else {
-        if (retPts.length === 0) outPts.push(pt); // overlap point
+        if (retPts.length === 0) outPts.push(pt);
         retPts.push(pt);
       }
     }
@@ -224,31 +182,24 @@ function TrajectoryLine({
 }
 
 /* ================================================================== */
-/*  Artemis II Spacecraft                                              */
+/*  Spacecraft                                                         */
 /* ================================================================== */
 
-function Spacecraft({
-  curve,
-  progress,
-  mapProgress,
-}: {
+function Spacecraft({ curve, progress, mapProgress }: {
   curve: THREE.CatmullRomCurve3;
-  progress: number; // 0..1
+  progress: number;
   mapProgress: (p: number) => number;
 }) {
   const trailRef = useRef<THREE.Vector3[]>([]);
-
   const curveT = mapProgress(Math.min(Math.max(progress, 0), 1));
   const pos = useMemo(() => curve.getPointAt(curveT), [curve, curveT]);
   const tangent = useMemo(() => curve.getTangentAt(curveT), [curve, curveT]);
 
-  // Accumulate trail
   useMemo(() => {
     trailRef.current.push(pos.clone());
     if (trailRef.current.length > 600) trailRef.current.shift();
   }, [pos]);
 
-  // Orient spacecraft along travel direction
   const quaternion = useMemo(() => {
     const up = new THREE.Vector3(0, 1, 0);
     const mat = new THREE.Matrix4().lookAt(new THREE.Vector3(), tangent, up);
@@ -257,96 +208,54 @@ function Spacecraft({
 
   return (
     <group>
-      {/* Orion spacecraft — capsule + service module + solar panels */}
       <group position={pos} quaternion={quaternion}>
-        {/* Crew Module (Orion capsule) — truncated cone pointing forward */}
         <mesh rotation={[Math.PI / 2, 0, 0]}>
           <cylinderGeometry args={[0.06, 0.14, 0.22, 12]} />
           <meshStandardMaterial color="#e8e0d0" roughness={0.6} metalness={0.3} />
         </mesh>
-        {/* Heat shield (dark bottom of capsule) */}
         <mesh position={[0, 0, -0.11]} rotation={[Math.PI / 2, 0, 0]}>
           <circleGeometry args={[0.14, 12]} />
           <meshStandardMaterial color="#332211" roughness={0.9} side={THREE.DoubleSide} />
         </mesh>
-        {/* Service Module (European Service Module — cylinder) */}
         <mesh position={[0, 0, -0.33]} rotation={[Math.PI / 2, 0, 0]}>
           <cylinderGeometry args={[0.13, 0.13, 0.3, 12]} />
           <meshStandardMaterial color="#888888" roughness={0.5} metalness={0.4} />
         </mesh>
-        {/* AJ10 engine nozzle */}
         <mesh position={[0, 0, -0.52]} rotation={[Math.PI / 2, 0, 0]}>
           <cylinderGeometry args={[0.04, 0.07, 0.08, 8]} />
           <meshStandardMaterial color="#555555" roughness={0.3} metalness={0.7} />
         </mesh>
-        {/* Solar Array Wings — 4 panels in X pattern */}
         {[0, Math.PI / 2, Math.PI, Math.PI * 1.5].map((angle, i) => (
-          <mesh
-            key={i}
-            position={[
-              Math.cos(angle) * 0.35,
-              Math.sin(angle) * 0.35,
-              -0.3,
-            ]}
-            rotation={[0, 0, angle]}
-          >
+          <mesh key={i} position={[Math.cos(angle) * 0.35, Math.sin(angle) * 0.35, -0.3]} rotation={[0, 0, angle]}>
             <boxGeometry args={[0.35, 0.08, 0.005]} />
-            <meshStandardMaterial
-              color="#1a2244"
-              roughness={0.4}
-              metalness={0.6}
-              emissive="#112244"
-              emissiveIntensity={0.15}
-            />
+            <meshStandardMaterial color="#1a2244" roughness={0.4} metalness={0.6} emissive="#112244" emissiveIntensity={0.15} />
           </mesh>
         ))}
-        {/* Gold foil accent band on service module */}
         <mesh position={[0, 0, -0.2]} rotation={[Math.PI / 2, 0, 0]}>
           <cylinderGeometry args={[0.135, 0.135, 0.03, 12]} />
           <meshStandardMaterial color="#ccaa44" roughness={0.3} metalness={0.8} />
         </mesh>
       </group>
-      {/* Glow */}
       <pointLight position={pos} color="#ff6622" intensity={2} distance={5} />
-      {/* Label */}
       <Html position={[pos.x, pos.y + 0.5, pos.z]} center style={{ pointerEvents: 'none' }}>
-        <div
-          style={{
-            color: '#ff8844',
-            fontSize: 11,
-            fontFamily: 'monospace',
-            whiteSpace: 'nowrap',
-            textShadow: '0 0 6px #ff4400',
-          }}
-        >
+        <div style={{ color: '#ff8844', fontSize: 11, fontFamily: 'monospace', whiteSpace: 'nowrap', textShadow: '0 0 6px #ff4400' }}>
           Orion "Integrity"
         </div>
       </Html>
-      {/* Trail */}
       {trailRef.current.length > 2 && (
-        <Line
-          points={trailRef.current}
-          color="#ff4400"
-          lineWidth={1}
-          transparent
-          opacity={0.35}
-        />
+        <Line points={trailRef.current} color="#ff4400" lineWidth={1} transparent opacity={0.35} />
       )}
     </group>
   );
 }
 
 /* ================================================================== */
-/*  Camera controller — smooth focus on target                         */
+/*  Camera controller                                                  */
 /* ================================================================== */
 
-function CameraController({
-  focusTarget,
-  moonAngle,
-  shipPos,
-}: {
+function CameraController({ focusTarget, moonDistance, shipPos }: {
   focusTarget: FocusTarget;
-  moonAngle: number;
+  moonDistance: number;
   shipPos: THREE.Vector3;
 }) {
   const controlsRef = useRef<OrbitControlsImpl>(null!);
@@ -355,75 +264,47 @@ function CameraController({
   useFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
-
-    // Compute desired target position
     let desired: THREE.Vector3;
     switch (focusTarget) {
       case 'moon':
-        desired = new THREE.Vector3(
-          Math.cos(moonAngle) * MOON_DISTANCE,
-          0,
-          Math.sin(moonAngle) * MOON_DISTANCE,
-        );
+        desired = new THREE.Vector3(moonDistance, 0, 0);
         break;
       case 'ship':
         desired = shipPos.clone();
         break;
-      case 'earth':
       default:
         desired = new THREE.Vector3(0, 0, 0);
         break;
     }
-
-    // Smooth lerp toward desired target
     targetVec.current.lerp(desired, 1 - Math.pow(0.01, delta));
     controls.target.copy(targetVec.current);
     controls.update();
   });
 
   return (
-    <OrbitControls
-      ref={controlsRef}
-      enablePan
-      enableZoom
-      enableRotate
-      minDistance={0.5}
-      maxDistance={500}
-      zoomSpeed={1.2}
-    />
+    <OrbitControls ref={controlsRef} enablePan enableZoom enableRotate minDistance={0.5} maxDistance={500} zoomSpeed={1.2} />
   );
 }
 
 /* ================================================================== */
-/*  Scene – orchestrates time, Moon angle, trajectory                   */
+/*  Scene                                                              */
 /* ================================================================== */
 
-function Scene({
-  playing,
-  speed,
-  progress,
-  setProgress,
-  focusTarget,
-}: {
+function Scene({ playing, speed, progress, setProgress, focusTarget, config }: {
   playing: boolean;
   speed: number;
   progress: number;
   setProgress: (p: number | ((prev: number) => number)) => void;
   focusTarget: FocusTarget;
+  config: TrajectoryConfig;
 }) {
-  // NASA animations use a rotating reference frame (synodic frame) where
-  // the Moon stays fixed relative to Earth. In the inertial frame the Moon
-  // moves ~132° over 10 days and the figure-8 shape is not visible.
-  // We fix the Moon at angle 0 and build the trajectory for that position.
   const moonAngle = 0;
-  const curve = useMemo(() => buildTrajectory(0), []);
-  const mapProgress = useMemo(() => buildProgressMapping(curve), [curve]);
+  const curve = useMemo(() => config.buildTrajectory(0), [config]);
+  const mapProgress = useMemo(() => config.buildProgressMapping(curve), [config, curve]);
 
-  // Compute ship position for camera tracking
   const curveT = mapProgress(Math.min(Math.max(progress, 0), 1));
   const shipPos = useMemo(() => curve.getPointAt(curveT), [curve, curveT]);
 
-  // Advance progress
   useFrame((_, delta) => {
     if (!playing) return;
     setProgress((prev: number) => {
@@ -437,75 +318,39 @@ function Scene({
       <Sun />
       <StarField />
       <Earth progress={progress} />
-      <MoonOrbit />
-      <Moon angle={moonAngle} />
+      <MoonOrbit moonDistance={config.moonDistance} />
+      <Moon angle={moonAngle} moonDistance={config.moonDistance} moonRadius={config.moonRadius} />
       <DistantBodies />
       <TrajectoryLine curve={curve} mapProgress={mapProgress} />
       <Spacecraft curve={curve} progress={progress} mapProgress={mapProgress} />
-      <CameraController focusTarget={focusTarget} moonAngle={0} shipPos={shipPos} />
+      <CameraController focusTarget={focusTarget} moonDistance={config.moonDistance} shipPos={shipPos} />
     </>
   );
 }
 
 /* ================================================================== */
-/*  HUD / Controls                                                     */
+/*  Styles                                                             */
 /* ================================================================== */
 
 const controlStyle: React.CSSProperties = {
-  position: 'absolute',
-  bottom: 0,
-  left: 0,
-  right: 0,
-  display: 'flex',
-  alignItems: 'center',
-  gap: 12,
+  position: 'absolute', bottom: 0, left: 0, right: 0,
+  display: 'flex', alignItems: 'center', gap: 12,
   padding: '12px 20px',
   background: 'linear-gradient(transparent, rgba(0,0,0,0.85))',
-  color: '#ddd',
-  fontFamily: 'monospace',
-  fontSize: 13,
-  zIndex: 10,
-  userSelect: 'none',
+  color: '#ddd', fontFamily: 'monospace', fontSize: 13,
+  zIndex: 10, userSelect: 'none',
 };
 
 const btnStyle: React.CSSProperties = {
-  background: 'none',
-  border: '1px solid #666',
-  color: '#eee',
-  borderRadius: 4,
-  padding: '4px 14px',
-  cursor: 'pointer',
-  fontFamily: 'monospace',
-  fontSize: 13,
+  background: 'none', border: '1px solid #666', color: '#eee',
+  borderRadius: 4, padding: '4px 14px', cursor: 'pointer',
+  fontFamily: 'monospace', fontSize: 13,
 };
 
-function phaseName(t: number): string {
-  if (t < MISSION_TIMELINE.leo)       return '🚀 Launch — LC-39B, Kennedy Space Center';
-  if (t < MISSION_TIMELINE.tli)       return '🌍 Low Earth Orbit — 185 km parking orbit';
-  if (t < MISSION_TIMELINE.coast1)    return '🔥 Trans-Lunar Injection burn';
-  if (t < MISSION_TIMELINE.approach)  return '🌌 Translunar Coast (outbound leg)';
-  if (t < MISSION_TIMELINE.flyby)     return '🌙 Entering Moon\'s Sphere of Influence';
-  if (t < MISSION_TIMELINE.depart)    return '🌑 Far Side Flyby — 6,545 km from surface';
-  if (t < MISSION_TIMELINE.return1)   return '🌙 Departing Moon';
-  if (t < MISSION_TIMELINE.reentry)   return '🌌 Free-Return Coast (return leg)';
-  if (t < MISSION_TIMELINE.splashdown) return '🔥 Re-entry — 40,000 km/h';
-  return '🏁 Splashdown — Pacific Ocean';
-}
-
-/* ================================================================== */
-/*  Top-level info panel                                               */
-/* ================================================================== */
-
 const infoPanelStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 12,
-  left: 12,
-  color: '#aac',
-  fontFamily: 'monospace',
-  fontSize: 12,
-  lineHeight: '1.7',
-  zIndex: 10,
-  pointerEvents: 'none',
+  position: 'absolute', top: 12, left: 12,
+  color: '#aac', fontFamily: 'monospace', fontSize: 12,
+  lineHeight: '1.7', zIndex: 10, pointerEvents: 'none',
 };
 
 /* ================================================================== */
@@ -517,6 +362,9 @@ export default function App() {
   const [speed, setSpeed] = useState(1);
   const [progress, setProgress] = useState(0);
   const [focusTarget, setFocusTarget] = useState<FocusTarget>('earth');
+  const [version, setVersion] = useState<TrajectoryVersion>('v2');
+
+  const config = useMemo(() => getTrajectoryConfig(version), [version]);
 
   const togglePlay = useCallback(() => setPlaying((p) => !p), []);
   const reset = useCallback(() => {
@@ -524,11 +372,13 @@ export default function App() {
     setPlaying(false);
     setFocusTarget('earth');
   }, []);
-  const stepForward = useCallback(() => {
-    setProgress((p) => Math.min(p + 0.005, 1)); // +0.5% ≈ 1.2 hours
-  }, []);
-  const stepBackward = useCallback(() => {
-    setProgress((p) => Math.max(p - 0.005, 0));
+  const stepForward = useCallback(() => setProgress((p) => Math.min(p + 0.005, 1)), []);
+  const stepBackward = useCallback(() => setProgress((p) => Math.max(p - 0.005, 0)), []);
+
+  const switchVersion = useCallback((v: TrajectoryVersion) => {
+    setVersion(v);
+    setProgress(0);
+    setPlaying(false);
   }, []);
 
   const missionDay = (progress * 10).toFixed(1);
@@ -542,14 +392,17 @@ export default function App() {
         <div style={{ fontSize: 16, color: '#ff8844', marginBottom: 4 }}>
           ARTEMIS II — Orion "Integrity"
         </div>
-        <div>Crewed Lunar Free-Return · SLS Block 1 · Real Physics</div>
+        <div>Crewed Lunar Free-Return · SLS Block 1</div>
+        <div style={{ marginTop: 4, fontSize: 11, color: '#88ff88' }}>
+          {config.label}
+        </div>
         <div style={{ marginTop: 6 }}>
           Mission Day: <span style={{ color: '#fff' }}>{missionDay}</span> / 10
         </div>
         <div>
           Date: <span style={{ color: '#fff' }}>{dateStr}</span>
         </div>
-        <div>Phase: <span style={{ color: '#ff8844' }}>{phaseName(progress)}</span></div>
+        <div>Phase: <span style={{ color: '#ff8844' }}>{config.phaseName(progress)}</span></div>
         <div style={{ marginTop: 6, fontSize: 10, color: '#778' }}>
           Crew: {CREW.map(c => c.name).join(' · ')}
         </div>
@@ -558,21 +411,14 @@ export default function App() {
         </div>
       </div>
 
-      {/* View / Focus controls — top right */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 12,
-          right: 12,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 6,
-          zIndex: 10,
-          fontFamily: 'monospace',
-          fontSize: 11,
-        }}
-      >
-        <div style={{ color: '#888', marginBottom: 2 }}>Focus Center:</div>
+      {/* Right panel: Focus + Version controls */}
+      <div style={{
+        position: 'absolute', top: 12, right: 12,
+        display: 'flex', flexDirection: 'column', gap: 6,
+        zIndex: 10, fontFamily: 'monospace', fontSize: 11,
+      }}>
+        {/* Focus controls */}
+        <div style={{ color: '#888', marginBottom: 2 }}>Focus:</div>
         {([
           { key: 'earth' as FocusTarget, label: '🌍 Earth', color: '#88ccff' },
           { key: 'moon' as FocusTarget, label: '🌙 Moon', color: '#ccccbb' },
@@ -582,13 +428,30 @@ export default function App() {
             key={key}
             onClick={() => setFocusTarget(key)}
             style={{
-              ...btnStyle,
-              fontSize: 11,
-              padding: '3px 10px',
-              textAlign: 'left',
+              ...btnStyle, fontSize: 11, padding: '3px 10px', textAlign: 'left',
               background: focusTarget === key ? 'rgba(255,255,255,0.12)' : 'none',
               borderColor: focusTarget === key ? color : '#555',
               color: focusTarget === key ? color : '#aaa',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+
+        {/* Version switcher */}
+        <div style={{ color: '#888', marginTop: 10, marginBottom: 2 }}>Trajectory:</div>
+        {([
+          { key: 'v1' as TrajectoryVersion, label: 'V1 Original', color: '#ffaa44' },
+          { key: 'v2' as TrajectoryVersion, label: 'V2 Real Physics', color: '#44ff88' },
+        ]).map(({ key, label, color }) => (
+          <button
+            key={key}
+            onClick={() => switchVersion(key)}
+            style={{
+              ...btnStyle, fontSize: 11, padding: '3px 10px', textAlign: 'left',
+              background: version === key ? 'rgba(255,255,255,0.12)' : 'none',
+              borderColor: version === key ? color : '#555',
+              color: version === key ? color : '#aaa',
             }}
           >
             {label}
@@ -602,25 +465,16 @@ export default function App() {
         gl={{ antialias: true, alpha: false }}
         style={{ width: '100%', height: '100%' }}
       >
-        <Scene playing={playing} speed={speed} progress={progress} setProgress={setProgress} focusTarget={focusTarget} />
+        <Scene playing={playing} speed={speed} progress={progress} setProgress={setProgress} focusTarget={focusTarget} config={config} />
       </Canvas>
 
       {/* Playback controls */}
       <div style={controlStyle}>
-        <button style={btnStyle} onClick={stepBackward} title="Step back ~1.2 hours">
-          ⏪
-        </button>
-        <button style={btnStyle} onClick={togglePlay}>
-          {playing ? '⏸ Pause' : '▶ Play'}
-        </button>
-        <button style={btnStyle} onClick={stepForward} title="Step forward ~1.2 hours">
-          ⏩
-        </button>
-        <button style={btnStyle} onClick={reset}>
-          ⏮ Reset
-        </button>
+        <button style={btnStyle} onClick={stepBackward} title="Step back">⏪</button>
+        <button style={btnStyle} onClick={togglePlay}>{playing ? '⏸ Pause' : '▶ Play'}</button>
+        <button style={btnStyle} onClick={stepForward} title="Step forward">⏩</button>
+        <button style={btnStyle} onClick={reset}>⏮ Reset</button>
 
-        {/* Speed selector */}
         <span style={{ color: '#888' }}>Speed:</span>
         {[0.25, 0.5, 1, 2, 4].map((s) => (
           <button
@@ -637,17 +491,12 @@ export default function App() {
           </button>
         ))}
 
-        {/* Progress slider */}
         <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.001}
+          type="range" min={0} max={1} step={0.001}
           value={progress}
           onChange={(e) => setProgress(parseFloat(e.target.value))}
           style={{ flex: 1, accentColor: '#ff6622', cursor: 'pointer' }}
         />
-
         <span style={{ minWidth: 60, textAlign: 'right' }}>{(progress * 100).toFixed(1)}%</span>
       </div>
     </div>
